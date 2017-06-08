@@ -3,7 +3,7 @@ include("Drawing.jl")
 module DataLoader
 using JSON
 using Drawing
-
+global const datapath = "/mnt/kufs/scratch/kkaiyrbekov15/DrawNet/data/"
 function initpointvocab(sketches)
   pointvocab = Dict{Tuple, Int}()
   count = 0
@@ -30,8 +30,8 @@ function getstrokes(drawing)
     #num of points in current stroke
     numpoints = length(stroke[1])
     for i = 1:numpoints
-      push!(points, Int(stroke[1][i]))
-      push!(points, Int(stroke[2][i]))
+      push!(points, Float32(stroke[1][i]))
+      push!(points, Float32(stroke[2][i]))
     end
     #update end index of current stroke
     push!(end_indices, end_indices[end] + numpoints)
@@ -63,9 +63,15 @@ function getsketches(filename)
 end
 
 function main()
-  dict2 = getsketches("full_simplified_airplane.ndjson")
-  printcontents(dict2[25])
-  initpointvocab(dict2)
+  num = 5
+  filename = "full_simplified_airplane.ndjson"
+  filepath = "$datapath$filename"
+  sketches = getsketches(filepath)
+  points = points_to_3d(sketches[num])
+  to_big_points(points)
+  printcontents(sketches[num])
+  savesketch(sketches[num])
+  initpointvocab(sketches)
 end
 main()
 end
