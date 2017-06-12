@@ -3,6 +3,20 @@ include("Drawing.jl")
 module DataLoader
 using JSON
 using Drawing
+
+type Parameters
+  batchsize::Int
+  max_seq_length::Int
+  min_seq_length::Int
+  scalefactor::AbstractFloat
+  rand_scalefactor::AbstractFloat
+  augment_prob::AbstractFloat
+  limit::Int
+  numbatches::Int
+  sketchpoints
+end
+Parameters(; batchsize=100, max_seq_length=250, min_seq_length=10, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+
 global const datapath = "/mnt/kufs/scratch/kkaiyrbekov15/DrawNet/data/"
 function initpointvocab(sketches)
   pointvocab = Dict{Tuple, Int}()
@@ -62,16 +76,89 @@ function getsketches(filename)
   return sketches
 end
 
-function main()
+function getmaxlen(sketches)
+  #=returns maximum length of points=#
+  maxlen = 0
+  for sketch in sketches
+    maxlen = max(maxlen, size(sketch.points, 2))
+  end
+  return maxlen
+end
+
+function preprocess(sketches, params::Parameters)
+  #=Remove sketches having > max_seq_length points=#
+  rawpoints = []
+  seqlen = Int[]
+  sketchpoints = []
+  countdata = 0
+  for sketch in sketches
+    points = points_to_3d(sketch)
+    len = size(points, 2)
+    if len <= params.max_seq_length && len > params.min_seq_length
+      points = to_big_points(points)
+      countdata += 1
+      #remove large gaps from data?
+      points[1:2, :] /= params.scalefactor
+      push!(rawpoints, points)
+      push!(seqlen, len)
+    end
+  end
+  #sorted order
+  idx = sortperm(seqlen)
+  for i=1:length(seqlen)
+    push!(sketchpoints, rawpoints[idx[i]])
+  end
+  println("total images <= max_seq_length is $(countdata)")
+  params.numbatches = div(countdata, params.batchsize)
+  return sketchpoints, params.numbatches
+end
+
+function get_scalefactor(sketchpoints; max_seq_length::Int=250)
+  #=Calculate the normalizing scale factor.=#
+  data = Float32[]
+  for i=1:length(sketchpoints)
+    points = sketchpoints[i]
+    for j=1:size(points, 2)
+      push!(data, points[1, j])
+      push!(data, points[2, j])
+    end
+  end
+  return std(data)
+end
+
+function normalize!(sketchpoints, params::Parameters; scalefactor = nothing)
+  #=Normalize entire dataset (delta_x, delta_y) by the scaling factor.=#
+  scalefactor = (scalefactor == nothing)? get_scalefactor(sketchpoints) : scalefactor
+  params.scalefactor = scalefactor
+  for points in sketchpoints
+    points[1:2, :] /= scalefactor
+  end
+end
+
+function getbatch(idx, params::Parameters)
+  @assert(idx >=1, "index must be positive")
+  @assert(idx <= params.numbatches, "index must be less than batchsize")
+end
+
+function test()
+  params = Parameters()
   num = 5
   filename = "full_simplified_airplane.ndjson"
   filepath = "$datapath$filename"
   sketches = getsketches(filepath)
-  points = points_to_3d(sketches[num])
-  to_big_points(points)
+  println("max_len=$(getmaxlen(sketches))")
+  sketchpoints, numbatches = preprocess(sketches, params)
+  @assert(params.numbatches != nothing && numbatches==params.numbatches)
+  println(get_scalefactor(sketchpoints))
+  println("normalizing")
+  copy_sketchpoints = deepcopy(sketchpoints)
+  println(copy_sketchpoints[1] == sketchpoints[1])
+  normalize!(sketchpoints, params)
+  println(copy_sketchpoints[1] == sketchpoints[1])
   printcontents(sketches[num])
   savesketch(sketches[num])
   initpointvocab(sketches)
+  getbatch(1, params)
 end
-main()
+test()
 end

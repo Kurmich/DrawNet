@@ -19,7 +19,7 @@ function points_to_3d(sketch::Sketch)
   len = size(points, 2)
   points[1:2, 2:len] -= points[1:2, 1:len-1]
   #discard first entry
-  printpoints(points[:, 2:len])
+  #printpoints(points[:, 2:len])
   return points[:, 2:len]
 end
 
@@ -37,8 +37,42 @@ function to_big_points(points; max_len=250)
   result[3, 1:len] = 1 - result[4, 1:len]
   #set state p3
   result[5, len+1:max_len] = 1
-  printpoints(result)
+  #printpoints(result)
   return result
+end
+
+
+function clean_points(points; factor::Int=100)
+  #=Cut irrelevant end points, scale to pixel space and store as integer.=#
+  len = size(points, 2)
+  rows = size(points, 1)
+  @assert(rows == 5)
+  copy_points = nothing
+  added_final = false
+  #iterate through all points
+  for i=1:len
+    finish_flag = Int(points[5, i])
+    if finish_flag == 0
+      x = Int(points[1, i]*factor)
+      y = Int(points[2, i]*factor)
+      p1 = Int(points[3, i])
+      p2 = Int(points[4, i])
+      if copy_points == nothing
+        copy_points = [x; y; p1; p2; finish_flag]
+      else
+        copy_points = hcat(copy_points, [x; y; p1; p2; finish_flag])
+      end
+    else
+      copy_points = hcat(copy_points, [0; 0; 0; 0; 1])
+      added_final = true
+      break
+    end
+  end
+  if !added_final
+    copy_points = hcat(copy_points, [0; 0; 0; 0; 1])
+  end
+  printpoints(copy_points)
+  return copy_points
 end
 
 function printpoints(points)
@@ -117,4 +151,5 @@ export plotsketch
 export savesketch
 export points_to_3d
 export to_big_points
+export clean_points
 end
