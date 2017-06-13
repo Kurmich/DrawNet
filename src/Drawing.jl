@@ -24,7 +24,7 @@ function points_to_3d(sketch::Sketch)
 end
 
 function to_big_points(points; max_len=250)
-  #=Make this the special bigger format as described in sketch-rnn paper.=#
+  #=Make this sketchpoints the special bigger format as described in sketch-rnn paper.=#
   len = size(points, 2)
   rows = size(points, 1)
   @assert(rows == 3 && len <= max_len)
@@ -73,6 +73,15 @@ function clean_points(points; factor::Int=100)
   end
   printpoints(copy_points)
   return copy_points
+end
+
+function randomscale(data, scalefactor)
+  x_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
+  y_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
+  result = copy(data)
+  result[1, :] *= x_scalefactor
+  result[2, :] *= y_scalefactor
+  return result
 end
 
 function printpoints(points)
