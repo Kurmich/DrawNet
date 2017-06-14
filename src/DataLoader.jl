@@ -1,5 +1,5 @@
-module DataLoader
 include("Drawing.jl")
+module DataLoader
 using JSON
 using Drawing
 
@@ -204,5 +204,5 @@ function test()
   savesketch(sketches[num])
   #initpointvocab(sketches)
 end
-test()
+#test()
 end
