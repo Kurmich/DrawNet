@@ -99,9 +99,21 @@ Bivariate normal distribution pdf.
 function bivariate_prob(delta_x, delta_y, mu_x, mu_y, sigma_x, sigma_y, rho)
   z = ((delta_x - mu_x)/sigma_x)^2 + ((delta_y - mu_y)/sigma_y)^2 - 2*rho*((delta_y - mu_y)/sigma_y)*((delta_x - mu_x)/sigma_x)
   t = sqrt(1-rho^2)
-  prob = exp( -( z/(2*t) ) ) / (2*pi*sigma_x*sigma_y*t)
+  prob = exp( -( z/(2*t*t) ) ) / (2*pi*sigma_x*sigma_y*t)
   return prob
 end
+
+function vec_bivariate_prob(x1, x2, mu1, mu2, s1, s2, rho)
+  norm1 = x1 .- mu1
+  norm2 = x2 .- mu2
+  s1s2 = s1 .* s2
+  z = (norm1./s1).*(norm1./s1) + (norm2./s2).*(norm2./s2) - ( (2 .* rho .*  (norm1 .* norm2)) ./ s1s2 )
+  #println("z[1] $(AutoGrad.getval(z[1]))")
+  neg_rho = 1 .- rho.*rho
+  prob = exp(-(z ./ (2.*neg_rho)) ) ./ (2*pi.*s1s2.*sqrt(neg_rho))
+  return prob
+end
+
 function softmax(p, d)
   tmp = exp(p)
   return tmp ./ sum(tmp, d)
@@ -163,6 +175,16 @@ function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
     mix_params = predict(model[:out_params], state[1]) #are parameters different for each sketch in batch? or same parameters for single batch? one for all seems reasonable CHANGE THIS
   #  println("size of mix_params $(size(mix_params))")
     #iterate over all mixtures
+    mixIdx = 0
+    mix_probs = pnorm[:, 1] .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mix_params[:, mixIdx+1], mix_params[:, mixIdx+2], exp(mix_params[:, mixIdx+3]), exp(mix_params[:, mixIdx+4]), tanh(mix_params[:, mixIdx+5]))
+    for m = 2:num_mixture
+      mixIdx = 5*(m-1)
+      mix_probs = mix_probs .+ pnorm[:, m] .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mix_params[:, mixIdx+1], mix_params[:, mixIdx+2], exp(mix_params[:, mixIdx+3]), exp(mix_params[:, mixIdx+4]), tanh(mix_params[:, mixIdx+5]))
+    end
+    #println("mix_probs[1] $(AutoGrad.getval(mix_probs[1]))")
+  #  println("offset_loss $(AutoGrad.getval(offset_loss))")
+    offset_loss += -sum( log(mix_probs.+ epsilon ) )
+    #=
     for j = 1:batchsize
       mix_probs = 0
       for m = 1:num_mixture
@@ -174,7 +196,7 @@ function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
       end
   #    println("sum of mix probs $(AutoGrad.getval(mix_probs))")
       offset_loss += -log(mix_probs + epsilon)
-    end
+    end=#
 
     #Calculate L_p in paper
     logits = predict(model[:out_q], state[1])
@@ -188,7 +210,7 @@ function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
   penstate_loss /= (maxlen * batchsize)
   #println("size kl_loss = $(size(kl_loss)) size offset_loss = $(size(offset_loss)) size penstate_loss = $(size(penstate_loss))")
   loss = offset_loss + penstate_loss + wkl*kl_loss
-  println("loss = $(AutoGrad.getval(loss)) ")
+  #println("loss = $(AutoGrad.getval(loss)) ")
   return loss
 end
 
@@ -211,13 +233,14 @@ function train(model, data, seqlens, wkl, opts, epochs)
       grads = s2sgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl)
       update!(model, grads, opts)
     end
+    @printf("epoch: %d trn loss: %g\n", e , avgloss(model, data, seqlens, wkl))
   end
 end
 
-function avgloss(model, data, seqlen, wkl)
+function avgloss(model, data, seqlens, wkl)
   sumloss = 0
   for i = 1:length(data)
-    sumloss += s2s(model, atype(data[i]), seqlen[i], wkl)
+    sumloss += s2s(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl)
   end
   return sumloss/length(data)
 end
@@ -269,10 +292,11 @@ function main(args=ARGS)
     ("--num_mixture"; arg_type=Int; default=20; help="Number of mixtures in Gaussian mixture model.")
     ("--z_size"; arg_type=Int; default=128; help="Size of latent vector z. Recommend 32, 64 or 128.")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
+    ("--wkl"; arg_type=Float32; default=1.0; help="Parameter weight for Kullback-Leibler loss.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
-    ("--optimization"; default="Adam()"; help="Optimization algorithm and parameters.")
+    ("--optimization"; default="Adam(; lr=0.001, gclip = 1.0)"; help="Optimization algorithm and parameters.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -281,9 +305,9 @@ function main(args=ARGS)
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   sketchpoints3D, numbatches = loaddata(o[:filename], params)
-  data, seqlens = minibatch(sketchpoints3D, 3, params)
+  data, seqlens = minibatch(sketchpoints3D, 700, params)
   info("Starting training")
-  train(model, data, seqlens, 1, optim, o[:epochs])
+  train(model, data, seqlens, o[:wkl], optim, o[:epochs])
 end
 main()
 end
