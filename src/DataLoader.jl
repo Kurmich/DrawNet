@@ -180,6 +180,17 @@ function getbatch(sketchpoints3D, idx, params::Parameters)
   return indices_to_batch(sketchpoints3D, indices, params)
 end
 
+function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params::Parameters=Parameters())
+  filepath = "$datapath$filename"
+  info("Retrieving sketches from $(filepath) file")
+  sketches = getsketches(filepath)
+  info("Retrieving 3D points from sketches")
+  sketchpoints3D, numbatches = preprocess(sketches, params)
+  info("Normalizing 3D sketchpoints")
+  normalize!(sketchpoints3D, params)
+  return sketchpoints3D, numbatches
+end
+
 function test()
   params = Parameters()
   num = 5
@@ -200,9 +211,12 @@ function test()
   println(copy_sketchpoints[1] == sketchpoints3D[1])
   normalize!(sketchpoints3D, params)
   println(copy_sketchpoints[1] == sketchpoints3D[1])
-  printcontents(sketches[num])
-  savesketch(sketches[num])
+  #printcontents(sketches[num])
+  #savesketch(sketches[num])
   #initpointvocab(sketches)
 end
 #test()
+export getsketchpoints3D
+export getbatch
+export Parameters
 end
