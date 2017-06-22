@@ -2,6 +2,13 @@ include("DataLoader.jl")
 module DrawNet
 using Drawing, DataLoader
 using Knet, ArgParse, JLD, AutoGrad
+type KLParameters
+  w::AbstractFloat
+  weight_start::AbstractFloat
+  decay_rate::AbstractFloat
+  tolerance::AbstractFloat
+end
+
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
@@ -52,8 +59,8 @@ z_size -> size of latent vector z
 =#
 function initpredecoder(model, e_H::Int, d_H::Int, z_size::Int)
   #Incoming input dims = [batchsize, 2e_H]
-  model[:mu] = [initxav(2e_H, 1), initzeros(1, 1)] #mu = input * W_mu .+ b_mu -> dims = [batchsize, 1]
-  model[:sigma_cap] = [initxav(2e_H, 1), initzeros(1, 1)] #sigma = input * W_sigma .+ b_sigma -> dims = [batchsize, 1]
+  model[:mu] = [initxav(2e_H, z_size), initzeros(1, z_size)] #mu = input * W_mu .+ b_mu -> dims = [batchsize, z_size]
+  model[:sigma_cap] = [initxav(2e_H, z_size), initzeros(1, z_size)] #sigma = input * W_sigma .+ b_sigma -> dims = [batchsize, z_size]
   #perform z = mu .+ sigma*N(0, I) -> z_dims = [batchsize, z_size]
   model[:z] = [initxav(z_size, 2d_H), initzeros(1, 2d_H)] # dec_H_0 = z*W_z .+ b_z -> dims = [batchsize, d_H]
 end
@@ -74,20 +81,6 @@ function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int)
 end
 
 function lstm(param, state, input)
-  weight, bias = param
-  hidden, cell = state
-  h = size(hidden, 2)
-  gates = hcat(input, hidden) * weight .+ bias
-  forget = sigm(gates[:, 1:h])
-  ingate = sigm(gates[:, 1+h:2h])
-  outgate = sigm(gates[:, 1+2h:3h])
-  change = tanh(gates[:, 1+3h:4h])
-  cell = cell .* forget + ingate .* change
-  hidden = outgate .* tanh(cell)
-  return (hidden, cell)
-end
-
-function bilstm(param, state, input)
   weight, bias = param
   hidden, cell = state
   h = size(hidden, 2)
@@ -126,7 +119,7 @@ function softmax(p, d)
   return tmp ./ sum(tmp, d)
 end
 
-function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
+function s2s(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
@@ -152,7 +145,7 @@ function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
   sigma = exp( sigma_cap/2 )
-  z = mu .+ sigma .* atype( gaussian(batchsize, z_size; mean=0, std=1) )
+  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0, std=1) )
 
   #decoder step
   hc = tanh(z*model[:z][1] .+ model[:z][2])
@@ -173,12 +166,22 @@ function s2s(model, data, seqlen, wkl; epsilon = 1e-6)
     rho = tanh(output[:, 5M+1:6M])
     qnorm = logp(output[:, 6M+1:6M+3], 2) #normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho)
-    offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) ) #L_s on paper(add epsilon to avoid log(0))
-    penstate_loss += -sum(data[i][:, (V-2):V] .* qnorm) #L_p on paper
+    mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
+    offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
+    if istraining
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qnorm) #L_p on paper
+    else
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qnorm .* mask) #L_p on paper
+    end
   end
-  kl_loss = -sum((1 + sigma_cap - mu.*mu - exp(sigma_cap))) / (2*z_size*batchsize) #Kullback-Leibler divergence loss term
   offset_loss /= (maxlen * batchsize)
   penstate_loss /= (maxlen * batchsize)
+  kl_loss = -sum((1 + sigma_cap - mu.*mu - exp(sigma_cap))) / (2*z_size*batchsize)   #Kullback-Leibler divergence loss term
+  if istraining
+    kl_loss = max(kl_loss, kl_tolerance)
+  else
+    return penstate_loss, offset_loss, kl_loss
+  end
   loss = offset_loss + penstate_loss + wkl*kl_loss
   return loss
 end
@@ -196,13 +199,17 @@ function initstate(batchsize, state0)
 end
 
 s2sgrad = grad(s2s)
-function train(model, data, seqlens, wkl, opts, epochs)
+function train(model, data, seqlens, opts, epochs, kl::KLParameters)
+  cur_wkl, step = 0, 0
   for e = 1:epochs
     for i = 1:length(data)
-      grads = s2sgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl)
+      cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
+      grads = s2sgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], cur_wkl, kl.tolerance)
       update!(model, grads, opts)
+      step += 1
     end
-    @printf("epoch: %d trn loss: %g\n", e , avgloss(model, data, seqlens, wkl))
+    (rec_loss, kl_loss) = evaluatemodel(model, data, seqlens, kl.w, kl.tolerance)
+    @printf("epoch: %d reconstuction loss: %g KL loss: %g  wkl: %g \n", e, rec_loss, kl_loss, cur_wkl)
     if e%20==0
       flush(STDOUT)
       arrmodel = convertmodel(model)
@@ -212,12 +219,14 @@ function train(model, data, seqlens, wkl, opts, epochs)
 
 end
 
-function avgloss(model, data, seqlens, wkl)
-  sumloss = 0
+function evaluatemodel(model, data, seqlens, wkl, kl_tolerance)
+  rec_loss, kl_loss = 0, 0
   for i = 1:length(data)
-    sumloss += s2s(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl)
+    penstate_loss, offset_loss, cur_kl_loss = s2s(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl, kl_tolerance; istraining = false)
+    rec_loss += (penstate_loss + offset_loss)
+    kl_loss += cur_kl_loss
   end
-  return sumloss/length(data)
+  return rec_loss/length(data), kl_loss/length(data)
 end
 
 function loaddata(filename, params)
@@ -280,6 +289,9 @@ function main(args=ARGS)
     ("--z_size"; arg_type=Int; default=128; help="Size of latent vector z. Recommend 32, 64 or 128.")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
     ("--wkl"; arg_type=Float64; default=1.0; help="Parameter weight for Kullback-Leibler loss.")
+    ("--kl_tolerance"; arg_type=Float64; default=0.2; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
+    ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
+    ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
@@ -288,13 +300,14 @@ function main(args=ARGS)
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
+  kl = KLParameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate], o[:kl_tolerance])
   model = init_s2s_lstm_model(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   sketchpoints3D, numbatches = loaddata(o[:filename], params)
   data, seqlens = minibatch(sketchpoints3D, 700, params)
   info("Starting training")
-  train(model, data, seqlens, o[:wkl], optim, o[:epochs])
+  train(model, data, seqlens, optim, o[:epochs], kl)
 end
 main()
 end
