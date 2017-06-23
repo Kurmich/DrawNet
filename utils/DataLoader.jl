@@ -16,7 +16,7 @@ type Parameters
 end
 Parameters(; batchsize=100, max_seq_length=200, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
-global const datapath = "/mnt/kufs/scratch/kkaiyrbekov15/DrawNet/data/"
+global const datapath = "../data/"
 function initpointvocab(sketches)
   pointvocab = Dict{Tuple, Int}()
   count = 0

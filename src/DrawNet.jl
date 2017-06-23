@@ -2,6 +2,7 @@ include("../utils/DataLoader.jl")
 module DrawNet
 using Drawing, DataLoader
 using Knet, ArgParse, JLD, AutoGrad
+
 type KLparameters
   w::AbstractFloat
   weight_start::AbstractFloat
@@ -26,7 +27,7 @@ z_size -> size of latent vector z
 V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
 num_mixture -> number of gaussian mixtures
 =#
-function init_s2s_lstm_model(e_H::Int, d_H::Int, V::Int, z_size::Int, num_mixture::Int)
+function initmodel(e_H::Int, d_H::Int, V::Int, z_size::Int, num_mixture::Int)
   #initial hidden and cell states of forward encoder
   model = Dict{Symbol, Any}()
   info("Initializing encoder.")
@@ -123,18 +124,12 @@ function vec_bivariate_prob(x1, x2, mu1, mu2, s1, s2, rho)
   return prob
 end
 
-function softmax(p, d)
+function softmax(p, d::Int)
   tmp = exp(p)
   return tmp ./ sum(tmp, d)
 end
 
-function s2s(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true)
-  #model settings
-  maxlen = maximum(seqlen) #maximum length of the input sequence
-  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
-  (batchsize, V) = size(data[1])
-  d_H = size(model[:embed], 2) #decoder hidden unit size
-  z_size = size(model[:z][1], 1) #size of latent vector z
+function encode(model, data, maxlen::Int, batchsize::Int)
   #Initialize states for forward-backward rnns
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
@@ -148,9 +143,31 @@ function s2s(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining:
     input = data[i]*model[:bw_embed]
     statebw = lstm(model[:bw_encode], statebw, input)
   end
+  return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
+end
 
+function get_mixparams(output, M::Int)
+  #Here I used different ordering for outputs; in practice order doesn't matter
+  pnorm = softmax(output[:, 1:M], 2) #normalized distribution probabilities
+  mu_x = output[:, M+1:2M]
+  mu_y = output[:, 2M+1:3M]
+  sigma_x = exp(output[:, 3M+1:4M])
+  sigma_y = exp(output[:, 4M+1:5M])
+  rho = tanh(output[:, 5M+1:6M])
+  qnorm = logp(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
+  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm
+end
+
+#sequence to sequence variational autoencoder
+function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true)
+  #model settings
+  maxlen = maximum(seqlen) #maximum length of the input sequence
+  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+  (batchsize, V) = size(data[1])
+  d_H = size(model[:embed], 2) #decoder hidden unit size
+  z_size = size(model[:z][1], 1) #size of latent vector z
+  h = encode(model, data, maxlen, batchsize)
   #predecoder step
-  h = hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
   sigma = exp( sigma_cap/2 )
@@ -167,14 +184,8 @@ function s2s(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining:
     input = input * model[:embed]
     state = lstm(model[:decode], state, input)
     output =  predict(model[:output], state[1]) #get output params
-    pnorm = softmax(output[:, 1:M], 2) #normalized distribution probabilities
-    mu_x = output[:, M+1:2M]
-    mu_y = output[:, 2M+1:3M]
-    sigma_x = exp(output[:, 3M+1:4M])
-    sigma_y = exp(output[:, 4M+1:5M])
-    rho = tanh(output[:, 5M+1:6M])
-    qnorm = logp(output[:, 6M+1:6M+3], 2) #normalized logit values
-    mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho)
+    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
+    mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
     mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
     offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
     if istraining
@@ -207,15 +218,15 @@ function initstate(batchsize, state0)
     return (h,c)
 end
 
-s2sgrad = grad(s2s)
+s2sVAEgrad = grad(s2sVAE)
 function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLparameters)
   cur_wkl, step = 0, 0
   for e = 1:epochs
     for i = 1:length(data)
       cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
       cur_lr = (lrp.lr - lrp.min_lr)*(lrp.decay_rate^step) + lrp.min_lr
-      grads = s2sgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], cur_wkl, kl.tolerance)
-      setlr!(opts, cur_lr)
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], cur_wkl, kl.tolerance)
+      updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
     end
@@ -230,10 +241,11 @@ function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLpara
 
 end
 
+#calculates average reconstuction and KL losses
 function evaluatemodel(model, data, seqlens, wkl, kl_tolerance)
   rec_loss, kl_loss = 0, 0
   for i = 1:length(data)
-    penstate_loss, offset_loss, cur_kl_loss = s2s(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl, kl_tolerance; istraining = false)
+    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl, kl_tolerance; istraining = false)
     rec_loss += (penstate_loss + offset_loss)
     kl_loss += cur_kl_loss
   end
@@ -261,8 +273,8 @@ function minibatch(sketchpoints3D, numbatches, params)
   return data, seqlens
 end
 
-
-function setlr!(opts::Associative, cur_lr)
+#update learning rate of parameters
+function updatelr!(opts::Associative, cur_lr)
   for (key, val) in opts
     if typeof(val) == Knet.Adam
       val.lr = cur_lr
@@ -328,11 +340,11 @@ function main(args=ARGS)
   o = parse_args(args, s; as_symbols=true)
   kl = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate], o[:kl_tolerance]) #Kullback-Leibler parameters
   lrp = LRparameters(o[:lr], o[:min_lr], o[:lr_decay_rate]) #learning rate parameters
-  model = init_s2s_lstm_model(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
+  model = initmodel(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   sketchpoints3D, numbatches = loaddata(o[:filename], params)
-  data, seqlens = minibatch(sketchpoints3D, 10, params)
+  data, seqlens = minibatch(sketchpoints3D, 100, params)
   info("Starting training")
   train(model, data, seqlens, optim, o[:epochs], lrp, kl)
 end
