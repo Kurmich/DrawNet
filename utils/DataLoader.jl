@@ -14,7 +14,7 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=250, min_seq_length=10, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=200, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "/mnt/kufs/scratch/kkaiyrbekov15/DrawNet/data/"
 function initpointvocab(sketches)
@@ -57,6 +57,9 @@ end
 
 function initsketch(sketch_dict::Dict)
   recognized = Bool(sketch_dict["recognized"])
+  if !recognized
+    return nothing #get only recognized sketches
+  end
   drawing = sketch_dict["drawing"]
   label = String(sketch_dict["word"])
   key_id = String(sketch_dict["key_id"])
@@ -71,7 +74,10 @@ function getsketches(filename)
        sketch_dict = Dict()
        sketch_text = readline(f)  # file information to string
        sketch_dict=JSON.parse(sketch_text)  # parse and transform data
-       push!(sketches, initsketch(sketch_dict))
+       sketch = initsketch(sketch_dict)
+       if sketch != nothing
+         push!(sketches, sketch)
+       end
      end
   end
   return sketches
@@ -135,6 +141,7 @@ function normalize!(sketchpoints3D, params::Parameters; scalefactor = nothing)
   for points in sketchpoints3D
     points[1:2, :] /= scalefactor
   end
+  return sketchpoints3D
 end
 
 function padbatch(batch, params::Parameters)
@@ -187,7 +194,7 @@ function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params:
   info("Retrieving 3D points from sketches")
   sketchpoints3D, numbatches = preprocess(sketches, params)
   info("Normalizing 3D sketchpoints")
-  normalize!(sketchpoints3D, params)
+  sketchpoints3D = normalize!(sketchpoints3D, params)
   return sketchpoints3D, numbatches
 end
 
