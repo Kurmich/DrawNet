@@ -1,12 +1,18 @@
-include("DataLoader.jl")
+include("../utils/DataLoader.jl")
 module DrawNet
 using Drawing, DataLoader
 using Knet, ArgParse, JLD, AutoGrad
-type KLParameters
+type KLparameters
   w::AbstractFloat
   weight_start::AbstractFloat
   decay_rate::AbstractFloat
   tolerance::AbstractFloat
+end
+
+type LRparameters
+  lr::AbstractFloat
+  min_lr::AbstractFloat
+  decay_rate::AbstractFloat
 end
 
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
@@ -104,6 +110,9 @@ function bivariate_prob(delta_x, delta_y, mu_x, mu_y, sigma_x, sigma_y, rho)
   return prob
 end
 
+#=
+Vectorized bivariate normal distribution pdf.
+=#
 function vec_bivariate_prob(x1, x2, mu1, mu2, s1, s2, rho)
   norm1 = x1 .- mu1
   norm2 = x2 .- mu2
@@ -199,12 +208,14 @@ function initstate(batchsize, state0)
 end
 
 s2sgrad = grad(s2s)
-function train(model, data, seqlens, opts, epochs, kl::KLParameters)
+function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLparameters)
   cur_wkl, step = 0, 0
   for e = 1:epochs
     for i = 1:length(data)
       cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
+      cur_lr = (lrp.lr - lrp.min_lr)*(lrp.decay_rate^step) + lrp.min_lr
       grads = s2sgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], cur_wkl, kl.tolerance)
+      setlr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
     end
@@ -251,13 +262,25 @@ function minibatch(sketchpoints3D, numbatches, params)
 end
 
 
+function setlr!(opts::Associative, cur_lr)
+  for (key, val) in opts
+    if typeof(val) == Knet.Adam
+      val.lr = cur_lr
+    else
+      for opt in val
+        opt.lr = cur_lr
+      end
+    end
+  end
+end
+
 # initoptim creates optimization parameters for each numeric weight
 # array in the model.  This should work for a model consisting of any
 # combination of tuple/array/dict.
-initoptim{T<:Number}(::KnetArray{T},otype)=eval(parse(otype))
-initoptim{T<:Number}(::Array{T},otype)=eval(parse(otype))
-initoptim(a::Associative,otype)=Dict(k=>initoptim(v,otype) for (k,v) in a)
-initoptim(a,otype)=map(x->initoptim(x,otype), a)
+initoptim{T<:Number}(::KnetArray{T}, optim_type) = eval(parse(optim_type))
+initoptim{T<:Number}(::Array{T}, optim_type) = eval(parse(optim_type))
+initoptim(model::Associative, optim_type) = Dict( key => initoptim(val, optim_type) for (key,val) in model )
+initoptim(w, optim_type) = map(x->initoptim(x, optim_type), w)
 
 
 # convert model to save
@@ -292,22 +315,26 @@ function main(args=ARGS)
     ("--kl_tolerance"; arg_type=Float64; default=0.2; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
+    ("--lr"; arg_type=Float64; default=0.001; help="Learning rate")
+    ("--min_lr"; arg_type=Float64; default=0.0001; help="Minimum learning rate.")
+    ("--lr_decay_rate"; arg_type=Float64; default=0.9999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
-    ("--optimization"; default="Adam(; lr=0.001, gclip = 1.0)"; help="Optimization algorithm and parameters.")
+    ("--optimization"; default="Adam(;gclip = 1.0)"; help="Optimization algorithm and parameters.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-  kl = KLParameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate], o[:kl_tolerance])
+  kl = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate], o[:kl_tolerance]) #Kullback-Leibler parameters
+  lrp = LRparameters(o[:lr], o[:min_lr], o[:lr_decay_rate]) #learning rate parameters
   model = init_s2s_lstm_model(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   sketchpoints3D, numbatches = loaddata(o[:filename], params)
-  data, seqlens = minibatch(sketchpoints3D, 700, params)
+  data, seqlens = minibatch(sketchpoints3D, 10, params)
   info("Starting training")
-  train(model, data, seqlens, optim, o[:epochs], kl)
+  train(model, data, seqlens, optim, o[:epochs], lrp, kl)
 end
 main()
 end
