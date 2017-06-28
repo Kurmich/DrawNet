@@ -232,10 +232,10 @@ function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLpara
     end
     (rec_loss, kl_loss) = evaluatemodel(model, data, seqlens, kl.w, kl.tolerance)
     @printf("epoch: %d reconstuction loss: %g KL loss: %g  wkl: %g \n", e, rec_loss, kl_loss, cur_wkl)
-    if e%20==0
+    if e%10==0
       flush(STDOUT)
       arrmodel = convertmodel(model)
-      save("model$(e).jld","model", arrmodel)
+      save("../pretrained/model$(e).jld","model", arrmodel)
     end
   end
 
@@ -286,6 +286,22 @@ function updatelr!(opts::Associative, cur_lr)
   end
 end
 
+function normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params::Parameters)
+  DataLoader.normalize!(trnpoints3D, params)
+  DataLoader.normalize!(vldpoints3D, params; scalefactor=params.scalefactor)
+  DataLoader.normalize!(tstpoints3D, params; scalefactor=params.scalefactor)
+end
+
+function savedata(filename, trndata, vlddata, tstdata)
+  rawname = split(filename, ".")[1]
+  save("../data/$(rawname).jld","train", trndata, "valid", vlddata, "test", tstdata)
+end
+
+function loaddata(filename)
+  dataset = load(filename)
+  return dataset["train"], dataset["valid"], dataset["test"]
+end
+
 # initoptim creates optimization parameters for each numeric weight
 # array in the model.  This should work for a model consisting of any
 # combination of tuple/array/dict.
@@ -328,7 +344,7 @@ function main(args=ARGS)
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
     ("--lr"; arg_type=Float64; default=0.001; help="Learning rate")
-    ("--min_lr"; arg_type=Float64; default=0.0001; help="Minimum learning rate.")
+    ("--min_lr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
     ("--lr_decay_rate"; arg_type=Float64; default=0.9999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
@@ -344,9 +360,17 @@ function main(args=ARGS)
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   sketchpoints3D, numbatches = loaddata(o[:filename], params)
-  data, seqlens = minibatch(sketchpoints3D, 100, params)
-  info("Starting training")
-  train(model, data, seqlens, optim, o[:epochs], lrp, kl)
+  trnpoints3D, vldpoints3D, tstpoints3D = splitdata(sketchpoints3D)
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
+  if !o[:readydata]
+    savedata(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
+  end
+  trn_batch_count = div(length(trnpoints3D), params.batchsize)
+  vld_batch_count = div(length(vldpoints3D), params.batchsize)
+  tst_batch_count = div(length(tstpoints3D), params.batchsize)
+  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
+  println("Starting training")
+  train(model, trndata, trnseqlens, optim, o[:epochs], lrp, kl)
 end
 main()
 end
