@@ -14,7 +14,7 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=200, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=45, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
 function initpointvocab(sketches)
@@ -93,7 +93,7 @@ function getmaxlen(sketches)
 end
 
 function preprocess(sketches, params::Parameters)
-  #=Remove sketches having > max_seq_length points=#
+  #=Remove sketches having > max_seq_length points or < min_seq_length=#
   rawpoints = []
   seqlen = Int[]
   sketchpoints3D = []
@@ -110,12 +110,12 @@ function preprocess(sketches, params::Parameters)
       push!(seqlen, len)
     end
   end
-  #sorted order
+  #sorted order according to sequence lengths
   idx = sortperm(seqlen)
   for i=1:length(seqlen)
     push!(sketchpoints3D, rawpoints[idx[i]])
   end
-  println("total images <= max_seq_length is $(countdata)")
+  println("total images <= max_seq_length($(params.max_seq_length)) is $(countdata)")
   params.numbatches = div(countdata, params.batchsize)
   #=returns in stroke-3 format=#
   return sketchpoints3D, params.numbatches
@@ -142,6 +142,17 @@ function normalize!(sketchpoints3D, params::Parameters; scalefactor = nothing)
     points[1:2, :] /= scalefactor
   end
   return sketchpoints3D
+end
+
+function restore(sketchpoints3D, scalefactor = nothing)
+  @assert(scalefactor != nothing, "Scale factor can't be nothing")
+  for points in sketchpoints3D
+    points[1:2, :] *= scalefactor
+  end
+  return sketchpoints3D
+end
+
+function constructsketch()
 end
 
 function padbatch(batch, params::Parameters)
@@ -193,9 +204,25 @@ function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params:
   sketches = getsketches(filepath)
   info("Retrieving 3D points from sketches")
   sketchpoints3D, numbatches = preprocess(sketches, params)
-  info("Normalizing 3D sketchpoints")
-  sketchpoints3D = normalize!(sketchpoints3D, params)
   return sketchpoints3D, numbatches
+end
+
+#splits data to train, validation and test sets
+function splitdata(sketchpoints3D; trn = 0.9, vld = 0.05, tst=0.05)
+  perm = randperm(length(sketchpoints3D)) #random permutation
+  #number of sketches in each slit
+  trncount = Int(ceil(trn * length(sketchpoints3D)))
+  vldcount = Int(ceil(vld * length(sketchpoints3D)))
+  tstcount = Int(ceil(tst * length(sketchpoints3D)))
+  #indices of sketches
+  start = 1
+  trnidx = perm[1:trncount]
+  start += trncount
+  vldidx = perm[start:start+vldcount]
+  start += vldcount
+  tstidx = perm[start:min(start + tstcount, length(sketchpoints3D))]
+  #return trn, vld, tst sketch datasets
+  return sketchpoints3D[trnidx], sketchpoints3D[vldidx], sketchpoints3D[tstidx]
 end
 
 function test()
@@ -206,6 +233,8 @@ function test()
   sketches = getsketches(filepath)
   println("max_len=$(getmaxlen(sketches))")
   sketchpoints3D, numbatches = preprocess(sketches, params)
+  trndata, vlddata, tstdata = splitdata(sketchpoints3D)
+  @printf("training set: %g validation set: %g test set: %g sizes", length(trndata), length(vlddata), length(tstdata))
   x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, 1, params)
   for len in seqlen
     println(len)
@@ -224,6 +253,8 @@ function test()
 end
 #test()
 export getsketchpoints3D
+export normalize!
 export getbatch
+export splitdata
 export Parameters
 end
