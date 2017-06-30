@@ -154,9 +154,26 @@ function get_mixparams(output, M::Int)
   sigma_x = exp(output[:, 3M+1:4M])
   sigma_y = exp(output[:, 4M+1:5M])
   rho = tanh(output[:, 5M+1:6M])
-  qnorm = logp(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
-  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm
+  qlognorm = logp(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
+  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm
 end
+#=
+inputpoints - list of (1, 5) point tuples
+model - pretrained model
+=#
+function getlatentvector(model, inputpoints)
+  #model settings
+  seqlen = length(inputpoints)
+  z_size = size(model[:z][1], 1) #size of latent vector z
+  h = encode(model, inputpoints, seqlen, 1)
+  #compute latent vector
+  mu = h*model[:mu][1] .+ model[:mu][2]
+  sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
+  sigma = exp( sigma_cap/2 )
+  z = mu + sigma .* atype( gaussian(1, z_size; mean=0, std=1) )
+  return z
+end
+
 
 #sequence to sequence variational autoencoder
 function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true)
@@ -171,7 +188,7 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
   sigma = exp( sigma_cap/2 )
-  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0, std=1) )
+  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0.0, std=1.0) )
 
   #decoder step
   hc = tanh(z*model[:z][1] .+ model[:z][2])
@@ -184,14 +201,14 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
     input = input * model[:embed]
     state = lstm(model[:decode], state, input)
     output =  predict(model[:output], state[1]) #get output params
-    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
+    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
     mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
     offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
     if istraining
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qnorm) #L_p on paper
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm) #L_p on paper
     else
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qnorm .* mask) #L_p on paper
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm .* mask) #L_p on paper
     end
   end
   offset_loss /= (maxlen * batchsize)
@@ -220,7 +237,7 @@ end
 
 s2sVAEgrad = grad(s2sVAE)
 function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLparameters)
-  cur_wkl, step = 0, 0
+  cur_wkl, step, cur_lr = 0, 0, 0
   for e = 1:epochs
     for i = 1:length(data)
       cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
@@ -231,12 +248,12 @@ function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLpara
       step += 1
     end
     (rec_loss, kl_loss) = evaluatemodel(model, data, seqlens, kl.w, kl.tolerance)
-    @printf("epoch: %d reconstuction loss: %g KL loss: %g  wkl: %g \n", e, rec_loss, kl_loss, cur_wkl)
+    @printf("epoch: %d step %d reconstuction loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, rec_loss, kl_loss, cur_wkl, cur_lr)
     if e%10==0
-      flush(STDOUT)
       arrmodel = convertmodel(model)
       save("../pretrained/model$(e).jld","model", arrmodel)
     end
+    flush(STDOUT)
   end
 
 end
@@ -252,7 +269,7 @@ function evaluatemodel(model, data, seqlens, wkl, kl_tolerance)
   return rec_loss/length(data), kl_loss/length(data)
 end
 
-function loaddata(filename, params)
+function getdata(filename, params)
   return getsketchpoints3D(filename; params = params)
 end
 
@@ -343,9 +360,9 @@ function main(args=ARGS)
     ("--kl_tolerance"; arg_type=Float64; default=0.2; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
-    ("--lr"; arg_type=Float64; default=0.001; help="Learning rate")
+    ("--lr"; arg_type=Float64; default=0.0001; help="Learning rate")
     ("--min_lr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
-    ("--lr_decay_rate"; arg_type=Float64; default=0.9999; help="Minimum learning rate.")
+    ("--lr_decay_rate"; arg_type=Float64; default=0.99999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
@@ -359,7 +376,7 @@ function main(args=ARGS)
   model = initmodel(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
-  sketchpoints3D, numbatches = loaddata(o[:filename], params)
+  sketchpoints3D, numbatches = getdata(o[:filename], params)
   trnpoints3D, vldpoints3D, tstpoints3D = splitdata(sketchpoints3D)
   normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
   if !o[:readydata]
@@ -372,5 +389,9 @@ function main(args=ARGS)
   println("Starting training")
   train(model, trndata, trnseqlens, optim, o[:epochs], lrp, kl)
 end
-main()
+#main()
+
+export revconvertmodel, encode, loaddata
+export getlatentvector, lstm, predict
+export softmax, sample_gaussian_2d
 end
