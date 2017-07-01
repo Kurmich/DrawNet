@@ -7,29 +7,24 @@ using Knet, ArgParse, JLD
 global const modelp = "../pretrained/"
 global const datap = "../data/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
-function points_to_lines(points)
-  strokes = []
-  x_points = []
-  y_points = []
+function constructsketch(points)
+  points2D = zeros(2, size(points, 2)-1)
+  endidxs = [0]
   x = 0
   y = 0
-  for i=1:size(points, 2)
-    if points[3, i] == 1
-      x += Float64(points[1, i])
-      y += Float64(points[2, i])
-      push!(x_points, x)
-      push!(y_points, y)
-      push!(strokes, vcat(x_points', y_points'))
-      x_points = []
-      y_points = []
-    else
-      x += Float64(points[1, i])
-      y += Float64(points[2, i])
-      push!(x_points, x)
-      push!(y_points, y)
+  for i=1:size(points, 2)-1
+    if points[3, i] == 0
+      push!(endidxs, i)
     end
+    x += Float64(points[1, i])
+    y += Float64(points[2, i])
+    points2D[1, i] = x
+    points2D[2, i] = y
   end
-  return strokes
+  label = "sampled sketch"
+  recognized = false
+  key_id = "sampled sketch"
+  return Sketch(label, recognized, key_id, points2D, endidxs)
 end
 
 function adjust_temp(pipdf, temp)
@@ -117,7 +112,7 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
   return points, mixture_params
 end
 
-function constructsketch(points)
+function constructsketchwrong(points)
   @assert(size(points, 1) == 5, "Needs (5, seqlen) matrices")
   endidxs = find(points[3, :].==0) #get indexes of zero elements
   println(size(endidxs))
@@ -140,6 +135,7 @@ end
 
 function getrandomsketch(points3D)
   idx = rand(1:length(points3D))
+  idx = 2
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   batch = []
   for i=1:size(x_5D, 2)
@@ -154,7 +150,7 @@ function main(args=ARGS)
   s.description="Sketch sampler from model. (c) Kurmanbek Kaiyrbekov 2017."
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
-    ("--model"; arg_type=String; default="model60.jld"; help="Name of the pretrained model")
+    ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
@@ -167,7 +163,7 @@ function main(args=ARGS)
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
   info("Train, Valid, Test data obtained")
-  x = getrandomsketch(trnpoints3D)
+  x = getrandomsketch(tstpoints3D)
   info("Random sketch was obtained")
   z = getlatentvector(model, x)
   info("got latent vector")
