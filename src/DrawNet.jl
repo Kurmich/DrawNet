@@ -17,6 +17,8 @@ type LRparameters
 end
 
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
+global const datap = "../data/"
+global const pretrnp = "../pretrained/"
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
 initrandn(winit=0.0001, d...) = KnetArray{Float32}(winit*randn(d...))
@@ -236,26 +238,51 @@ function initstate(batchsize, state0)
 end
 
 s2sVAEgrad = grad(s2sVAE)
-function train(model, data, seqlens, opts, epochs, lrp::LRparameters, kl::KLparameters)
+function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LRparameters, kl::KLparameters)
   cur_wkl, step, cur_lr = 0, 0, 0
-  for e = 1:epochs
-    for i = 1:length(data)
+  best_vld_cost = 100000
+  for e = 1:o[:epochs]
+    for i = 1:length(trndata)
       cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
       cur_lr = (lrp.lr - lrp.min_lr)*(lrp.decay_rate^step) + lrp.min_lr
-      grads = s2sVAEgrad(model, map(a->convert(atype, a), data[i]), seqlens[i], cur_wkl, kl.tolerance)
+      x = perturb(trndata[i]; scalefactor=o[:scalefactor])
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl, kl.tolerance)
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
     end
-    (rec_loss, kl_loss) = evaluatemodel(model, data, seqlens, kl.w, kl.tolerance)
-    @printf("epoch: %d step %d reconstuction loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, rec_loss, kl_loss, cur_wkl, cur_lr)
-    if e%10==0
+    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, kl.w, kl.tolerance)
+    #save the best model
+    vld_cost = vld_rec_loss + kl.w * vld_kl_loss
+    if vld_cost < best_vld_cost
+      best_vld_cost = vld_cost
       arrmodel = convertmodel(model)
-      save("../pretrained/model$(e).jld","model", arrmodel)
+      println("Epoch: $(e) saving best model to $(pretrnp)$(o[:bestmodel])")
+      save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
+    end
+    #report losses
+    @printf("vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
+    #save every o[:save_every] epochs
+    if e%o[:save_every]==0
+      arrmodel = convertmodel(model)
+      save("$(pretrnp)waugmodel$(e).jld","model", arrmodel)
     end
     flush(STDOUT)
   end
 
+end
+
+function perturb(data; scalefactor=0.1)
+  pdata = []
+  for i=1:length(data)
+    x_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
+    y_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
+    result = copy(data[i])
+    result[:, 1] *= x_scalefactor
+    result[:, 2] *= y_scalefactor
+    push!(pdata, result)
+  end
+  return pdata
 end
 
 #calculates average reconstuction and KL losses
@@ -345,14 +372,16 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=500; help="Number of batches per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
     ("--filename"; arg_type=String; default="full_simplified_airplane.ndjson"; help="Data file name")
+    ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
     ("--enc_model"; arg_type=String; default="lstm"; help="Ecoder: lstm, or ....")
     ("--enc_rnn_size"; arg_type=Int; default=512; help="Size of encoder.")
     ("--batchsize"; arg_type=Int; default=100; help="Minibatch size. Recommend leaving at 100.")
     ("--grad_clip"; arg_type=Float64; default=1.0; help="Gradient clipping. Recommend leaving at 1.0.")
+    ("--scalefactor"; arg_type=Float64; default=0.1; help="Random scaling data augmention proportion.")
     ("--num_mixture"; arg_type=Int; default=20; help="Number of mixtures in Gaussian mixture model.")
     ("--z_size"; arg_type=Int; default=128; help="Size of latent vector z. Recommend 32, 64 or 128.")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
@@ -367,6 +396,7 @@ function main(args=ARGS)
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
     ("--optimization"; default="Adam(;gclip = 1.0)"; help="Optimization algorithm and parameters.")
+    ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -376,20 +406,32 @@ function main(args=ARGS)
   model = initmodel(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
-  sketchpoints3D, numbatches = getdata(o[:filename], params)
-  trnpoints3D, vldpoints3D, tstpoints3D = splitdata(sketchpoints3D)
-  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
   if !o[:readydata]
+    sketchpoints3D, numbatches = getdata(o[:filename], params)
+    trnpoints3D, vldpoints3D, tstpoints3D = splitdata(sketchpoints3D)
+    normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
     savedata(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
+  else
+    println("Loading data for training!")
+    trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
   end
   trn_batch_count = div(length(trnpoints3D), params.batchsize)
-  vld_batch_count = div(length(vldpoints3D), params.batchsize)
-  tst_batch_count = div(length(tstpoints3D), params.batchsize)
+  params.numbatches = trn_batch_count
   trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
+  vld_batch_count = div(length(vldpoints3D), params.batchsize)
+  params.numbatches = vld_batch_count
+  vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
+
+  tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
-  train(model, trndata, trnseqlens, optim, o[:epochs], lrp, kl)
+  train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o, lrp, kl)
 end
 #main()
+if VERSION >= v"0.5.0-dev+7720"
+    PROGRAM_FILE == "DrawNet.jl" && main(ARGS)
+else
+    !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
+end
 
 export revconvertmodel, encode, loaddata
 export getlatentvector, lstm, predict
