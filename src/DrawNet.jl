@@ -89,7 +89,7 @@ function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int)
   model[:output] = [initxav(H, 6num_mixture + 3 ), initzeros(1, 6num_mixture + 3 )] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
 end
 
-function lstm(param, state, input)
+function lstm(param, state, input; dprob=0)
   weight, bias = param
   hidden, cell = state
   h = size(hidden, 2)
@@ -98,10 +98,40 @@ function lstm(param, state, input)
   ingate = sigm(gates[:, 1+h:2h])
   outgate = sigm(gates[:, 1+2h:3h])
   change = tanh(gates[:, 1+3h:4h])
-  cell = cell .* forget + ingate .* change
+  cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
   hidden = outgate .* tanh(cell)
   return (hidden, cell)
 end
+
+function normlayers(x, alpha, beta; epsilon=1e-3)
+  #=
+  dims(x) = (batchsize, hiddensize)
+  dims(alpha) = dims(beta) = (1, hiddensize)
+  dims(mean) = dims(std) = (batchsize, 1)
+  =#
+  mean = sum(x, 2)/size(x, 2)
+  x_shifted = x .- mean
+  var = sum(x_shifted.*x_shifted, 2)/size(x_shifted, 2) #NOT SURE IF REDUCTION IS RIGHT
+  rstd = 1 ./ srqt(var + epsilon)
+  return alpha .* x_shifted .* rstd .+ beta
+end
+
+function lstm_lnorm(param, state, input, alpha, beta; dprob=0)
+  weight, bias = param
+  hidden, cell = state
+  h = size(hidden, 2)
+  gates = hcat(input, hidden) * weight
+  gates = normlayers(gates) .+ bias
+  forget = sigm(gates[:, 1:h])
+  ingate = sigm(gates[:, 1+h:2h])
+  outgate = sigm(gates[:, 1+2h:3h])
+  change = tanh(gates[:, 1+3h:4h])
+  cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
+  hidden = outgate .* tanh(normalyers(cell, alpha[2], beta[2]))
+  return (hidden, cell)
+end
+
+
 
 #=
 Bivariate normal distribution pdf.
@@ -131,14 +161,14 @@ function softmax(p, d::Int)
   return tmp ./ sum(tmp, d)
 end
 
-function encode(model, data, maxlen::Int, batchsize::Int)
+function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   #Initialize states for forward-backward rnns
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
   #forward encoder
   for i = 1:maxlen
     input = data[i] * model[:fw_embed]
-    statefw = lstm(model[:fw_encode], statefw, input)
+    statefw = lstm(model[:fw_encode], statefw, input; dprob=dprob)
   end
   #backward encoder
   for i = maxlen:-1:1
@@ -178,14 +208,14 @@ end
 
 
 #sequence to sequence variational autoencoder
-function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true)
+function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
   d_H = size(model[:embed], 2) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
-  h = encode(model, data, maxlen, batchsize)
+  h = encode(model, data, maxlen, batchsize; dprob=dprob)
   #predecoder step
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
@@ -201,7 +231,7 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
     #dims data = [batchsize, V] = [batchsize, 5]
     input = hcat(data[i-1], z) #concatenate latent vector with previous point
     input = input * model[:embed]
-    state = lstm(model[:decode], state, input)
+    state = lstm(model[:decode], state, input; dprob=dprob)
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
@@ -246,7 +276,7 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LR
       cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
       cur_lr = (lrp.lr - lrp.min_lr)*(lrp.decay_rate^step) + lrp.min_lr
       x = perturb(trndata[i]; scalefactor=o[:scalefactor])
-      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl, kl.tolerance)
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl, kl.tolerance; dprob=o[:dprob])
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
@@ -265,7 +295,7 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LR
     #save every o[:save_every] epochs
     if e%o[:save_every]==0
       arrmodel = convertmodel(model)
-      save("$(pretrnp)waugmodel$(e).jld","model", arrmodel)
+      save("$(pretrnp)dropwaugmodel$(e).jld","model", arrmodel)
     end
     flush(STDOUT)
   end
@@ -384,6 +414,7 @@ function main(args=ARGS)
     ("--scalefactor"; arg_type=Float64; default=0.1; help="Random scaling data augmention proportion.")
     ("--num_mixture"; arg_type=Int; default=20; help="Number of mixtures in Gaussian mixture model.")
     ("--z_size"; arg_type=Int; default=128; help="Size of latent vector z. Recommend 32, 64 or 128.")
+    ("--dprob"; arg_type=Float64; default=0.1; help="Dropout probability(keep prob = 1 - dropoutprob).")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
     ("--wkl"; arg_type=Float64; default=1.0; help="Parameter weight for Kullback-Leibler loss.")
     ("--kl_tolerance"; arg_type=Float64; default=0.2; help="Level of KL loss at which to stop optimizing for KL.") #KL_min

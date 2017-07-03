@@ -135,7 +135,7 @@ end
 
 function getrandomsketch(points3D)
   idx = rand(1:length(points3D))
-  idx = 2
+  #idx = 2
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   batch = []
   for i=1:size(x_5D, 2)
