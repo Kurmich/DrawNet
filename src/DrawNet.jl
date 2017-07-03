@@ -51,13 +51,13 @@ V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
 function initencoder(model, H::Int, V::Int)
   #incoming input -> dims = (batchsize, V=5)
   model[:fw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:fw_embed] = initxav(V, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
+  #model[:fw_embed] = initxav(V, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
   #here x and hidden will be concatenated form lstm_input with dims = [batchsize, H]
-  model[:fw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+  model[:fw_encode] = [ initxav(H+V, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
   #same analysis goes for the decoder
   model[:bw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:bw_embed] = initxav(V, H)
-  model[:bw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+  #model[:bw_embed] = initxav(V, H)
+  model[:bw_encode] = [ initxav(H+V, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
 end
 
 #=
@@ -84,8 +84,8 @@ num_mixture -> number of gaussian mixtures
 function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int)
   initxav(d...) = atype(xavier(d...))
   #incoming input dims = [batchsize, z_size + V]
-  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
-  model[:decode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+#  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
+  model[:decode] = [ initxav(z_size+V+H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
   model[:output] = [initxav(H, 6num_mixture + 3 ), initzeros(1, 6num_mixture + 3 )] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
 end
 
@@ -131,8 +131,6 @@ function lstm_lnorm(param, state, input, alpha, beta; dprob=0)
   return (hidden, cell)
 end
 
-
-
 #=
 Bivariate normal distribution pdf.
 =#
@@ -161,19 +159,26 @@ function softmax(p, d::Int)
   return tmp ./ sum(tmp, d)
 end
 
+function initstate(batchsize, state0)
+    h,c = state0
+    h = h .+ fill!(similar(AutoGrad.getval(h), batchsize, length(h)), 0)
+    c = c .+ fill!(similar(AutoGrad.getval(c), batchsize, length(c)), 0)
+    return (h,c)
+end
+
 function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   #Initialize states for forward-backward rnns
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
   #forward encoder
   for i = 1:maxlen
-    input = data[i] * model[:fw_embed]
-    statefw = lstm(model[:fw_encode], statefw, input; dprob=dprob)
+    #input = data[i] * model[:fw_embed]
+    statefw = lstm(model[:fw_encode], statefw, data[i]; dprob=dprob)
   end
   #backward encoder
   for i = maxlen:-1:1
-    input = data[i]*model[:bw_embed]
-    statebw = lstm(model[:bw_encode], statebw, input)
+    #input = data[i]*model[:bw_embed]
+    statebw = lstm(model[:bw_encode], statebw, data[i]; dprob=dprob)
   end
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
 end
@@ -213,7 +218,7 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
   maxlen = maximum(seqlen) #maximum length of the input sequence
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
-  d_H = size(model[:embed], 2) #decoder hidden unit size
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
   h = encode(model, data, maxlen, batchsize; dprob=dprob)
   #predecoder step
@@ -230,7 +235,7 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
   for i = 2:maxlen
     #dims data = [batchsize, V] = [batchsize, 5]
     input = hcat(data[i-1], z) #concatenate latent vector with previous point
-    input = input * model[:embed]
+    #input = input * model[:embed]
     state = lstm(model[:decode], state, input; dprob=dprob)
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
@@ -257,14 +262,6 @@ end
 
 function predict(param, input)
   return input * param[1] .+ param[2]
-end
-
-
-function initstate(batchsize, state0)
-    h,c = state0
-    h = h .+ fill!(similar(AutoGrad.getval(h), batchsize, length(h)), 0)
-    c = c .+ fill!(similar(AutoGrad.getval(c), batchsize, length(c)), 0)
-    return (h,c)
 end
 
 s2sVAEgrad = grad(s2sVAE)
@@ -448,7 +445,7 @@ function main(args=ARGS)
   end
   trn_batch_count = div(length(trnpoints3D), params.batchsize)
   params.numbatches = trn_batch_count
-  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
+  trndata, trnseqlens = minibatch(trnpoints3D, params.numbatches-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
   vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
