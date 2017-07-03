@@ -21,6 +21,7 @@ global const datap = "../data/"
 global const pretrnp = "../pretrained/"
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
+initones(d...) = atype(ones(d...))
 initrandn(winit=0.0001, d...) = KnetArray{Float32}(winit*randn(d...))
 #=
 e_H -> size of hidden state of the encoder
@@ -38,10 +39,23 @@ function initmodel(e_H::Int, d_H::Int, V::Int, z_size::Int, num_mixture::Int)
   initpredecoder(model, e_H, d_H, z_size)
   info("Predecoder was initialized. Initializing decoder.")
   initdecoder(model, d_H, V, num_mixture, z_size)
+  info("Decoder was initialized. Initializing shifts.")
+  initshifts(model, e_H, d_H, z_size)
   info("Initialization complete.")
   return model
 end
 
+function initshifts(model, e_H, d_H, z_size)
+  model[:fw_shifts] = getshifts(e_H)
+  model[:bw_shifts] = getshifts(e_H)
+  model[:dec_shifts] = getshifts(d_H)
+end
+
+function getshifts(h::Int)
+  alpha = initones(1, h)
+  beta  = initzeros(1, h)
+  return [ alpha, beta ]
+end
 
 #=
 model -> rnn model
@@ -103,31 +117,34 @@ function lstm(param, state, input; dprob=0)
   return (hidden, cell)
 end
 
-function normlayers(x, alpha, beta; epsilon=1e-3)
+function normlayer(x, alpha, beta; epsilon=1e-3, mean = nothing, rstd = nothing) #speedup with precalculated mean and std?
   #=
   dims(x) = (batchsize, hiddensize)
   dims(alpha) = dims(beta) = (1, hiddensize)
   dims(mean) = dims(std) = (batchsize, 1)
   =#
-  mean = sum(x, 2)/size(x, 2)
+  mean = sum(x, 2)/size(x, 2) #dims = [batchsize, 1] sum over hidden units
   x_shifted = x .- mean
-  var = sum(x_shifted.*x_shifted, 2)/size(x_shifted, 2) #NOT SURE IF REDUCTION IS RIGHT
-  rstd = 1 ./ srqt(var + epsilon)
+  var = sum(x_shifted.*x_shifted, 2)/size(x_shifted, 2) #dims = [batchsize, 1] sum over hidden units
+  rstd = 1 ./ sqrt(var + epsilon)
   return alpha .* x_shifted .* rstd .+ beta
+end
+
+function normlayerall(x, alpha, beta; epsilon=1e-3)
+  #todo
 end
 
 function lstm_lnorm(param, state, input, alpha, beta; dprob=0)
   weight, bias = param
   hidden, cell = state
   h = size(hidden, 2)
-  gates = hcat(input, hidden) * weight
-  gates = normlayers(gates) .+ bias
-  forget = sigm(gates[:, 1:h])
-  ingate = sigm(gates[:, 1+h:2h])
-  outgate = sigm(gates[:, 1+2h:3h])
-  change = tanh(gates[:, 1+3h:4h])
+  gates = hcat(input, hidden) * weight .+ bias
+  forget = sigm(normlayer(gates[:, 1:h], alpha[1], beta[1]))
+  ingate = sigm(normlayer(gates[:, 1+h:2h], alpha[2], beta[2]))
+  outgate = sigm(normlayer(gates[:, 1+2h:3h], alpha[3], beta[3]))
+  change = tanh(normlayer(gates[:, 1+3h:4h], alpha[4], beta[4]))
   cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
-  hidden = outgate .* tanh(normalyers(cell, alpha[2], beta[2]))
+  hidden = outgate .* tanh(normlayer(cell, alpha[5], beta[5]))
   return (hidden, cell)
 end
 
@@ -173,12 +190,12 @@ function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   #forward encoder
   for i = 1:maxlen
     #input = data[i] * model[:fw_embed]
-    statefw = lstm(model[:fw_encode], statefw, data[i]; dprob=dprob)
+    statefw = lstm_lnorm(model[:fw_encode], statefw, data[i], model[:fw_shifts][1], model[:fw_shifts][2]; dprob=dprob)
   end
   #backward encoder
   for i = maxlen:-1:1
     #input = data[i]*model[:bw_embed]
-    statebw = lstm(model[:bw_encode], statebw, data[i]; dprob=dprob)
+    statebw = lstm_lnorm(model[:bw_encode], statebw, data[i], model[:bw_shifts][1], model[:bw_shifts][2]; dprob=dprob)
   end
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
 end
@@ -236,7 +253,7 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
     #dims data = [batchsize, V] = [batchsize, 5]
     input = hcat(data[i-1], z) #concatenate latent vector with previous point
     #input = input * model[:embed]
-    state = lstm(model[:decode], state, input; dprob=dprob)
+    state = lstm_lnorm(model[:decode], state, input, model[:dec_shifts][1], model[:dec_shifts][2]; dprob=dprob)
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
@@ -292,7 +309,7 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LR
     #save every o[:save_every] epochs
     if e%o[:save_every]==0
       arrmodel = convertmodel(model)
-      save("$(pretrnp)dropwaugmodel$(e).jld","model", arrmodel)
+      save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
     end
     flush(STDOUT)
   end
@@ -373,6 +390,7 @@ function loaddata(filename)
   return dataset["train"], dataset["valid"], dataset["test"]
 end
 
+
 # initoptim creates optimization parameters for each numeric weight
 # array in the model.  This should work for a model consisting of any
 # combination of tuple/array/dict.
@@ -403,6 +421,7 @@ function main(args=ARGS)
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
     ("--filename"; arg_type=String; default="full_simplified_airplane.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
+    ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
     ("--enc_model"; arg_type=String; default="lstm"; help="Ecoder: lstm, or ....")
     ("--enc_rnn_size"; arg_type=Int; default=512; help="Size of encoder.")
@@ -445,7 +464,7 @@ function main(args=ARGS)
   end
   trn_batch_count = div(length(trnpoints3D), params.batchsize)
   params.numbatches = trn_batch_count
-  trndata, trnseqlens = minibatch(trnpoints3D, params.numbatches-1, params)
+  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
   vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
