@@ -78,7 +78,7 @@ end
 function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = false)
   #=Samples sequence from pretrained model=#
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
-  d_H = size(model[:embed], 2) #decoder hidden unit size
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
   if z == nothing
     z = randn(1, z_size)
@@ -95,8 +95,8 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
   for i = 1:seqlen
     #dims data = [batchsize, V] = [batchsize, 5]
     input = hcat(prev_coords, z) #concatenate latent vector with previous point
-    input = input * model[:embed]
-    state = lstm(model[:decode], state, input)
+    #input = input * model[:embed]
+    state = lstm_lnorm(model[:decode], state, input, model[:dec_shifts][1], model[:dec_shifts][2])
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
