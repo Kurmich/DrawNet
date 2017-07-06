@@ -4,6 +4,7 @@ module Drawer
 using DrawNet, Drawing
 using Distributions, PyPlot
 using Knet, ArgParse, JLD
+include("../models/RNN.jl")
 global const modelp = "../pretrained/"
 global const datap = "../data/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
@@ -29,7 +30,11 @@ end
 
 function adjust_temp(pipdf, temp)
   #=Assumption: pipdf is normalized=#
-  return pipdf ./ temp
+  pipdf = log(pipdf)/temp
+  pipdf = pipdf .- maximum(pipdf)
+  pipdf = exp(pipdf)
+  pipdf = pipdf ./ sum(pipdf, 2)
+  return pipdf
 end
 
 function get_pi_idx(x, pdf; temp=1.0, greedy::Bool = false)
@@ -92,11 +97,15 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
   temp = temperature
   hc = tanh(z*model[:z][1] .+ model[:z][2])
   state = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
+  hasembed, hasshift = haskey(model, :embed), haskey(model, :dec_shifts)
+  alpha, beta  = hasshift ? (model[:dec_shifts][1], model[:dec_shifts][2]) : (nothing, nothing)
   for i = 1:seqlen
     #dims data = [batchsize, V] = [batchsize, 5]
-    input = hcat(prev_coords, z) #concatenate latent vector with previous point
-    #input = input * model[:embed]
-    state = lstm_lnorm(model[:decode], state, input, model[:dec_shifts][1], model[:dec_shifts][2])
+    input = hcat(prev_coords, z)
+    if hasembed
+      input = input * model[:embed]
+    end
+    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta)
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
@@ -142,7 +151,7 @@ function getrandomsketch(points3D)
     push!(batch, x_5D[:, i]')
   end
 
-  return map(a->convert(atype, a), batch)
+  return map(a->convert(atype, a), batch), x_5D
 end
 
 function main(args=ARGS)
@@ -163,8 +172,10 @@ function main(args=ARGS)
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
   info("Train, Valid, Test data obtained")
-  x = getrandomsketch(tstpoints3D)
+  x, x_5D  = getrandomsketch(tstpoints3D)
+  sketch = constructsketch(x_5D)
   info("Random sketch was obtained")
+  savesketch(sketch, "original.png")
   z = getlatentvector(model, x)
   info("got latent vector")
   decode(model, z; temperature=o[:T], greedy_mode=o[:greedy])

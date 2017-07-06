@@ -2,150 +2,20 @@ include("../utils/DataLoader.jl")
 module DrawNet
 using Drawing, DataLoader
 using Knet, ArgParse, JLD, AutoGrad
+include("../models/RNN.jl")
+global const datap = "../data/"
+global const pretrnp = "../pretrained/"
 
 type KLparameters
   w::AbstractFloat
-  weight_start::AbstractFloat
-  decay_rate::AbstractFloat
-  tolerance::AbstractFloat
+  wstart::AbstractFloat
+  decayrate::AbstractFloat
 end
 
 type LRparameters
   lr::AbstractFloat
-  min_lr::AbstractFloat
-  decay_rate::AbstractFloat
-end
-
-global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
-global const datap = "../data/"
-global const pretrnp = "../pretrained/"
-initxav(d...) = atype(xavier(d...))
-initzeros(d...) = atype(zeros(d...))
-initones(d...) = atype(ones(d...))
-initrandn(winit=0.0001, d...) = KnetArray{Float32}(winit*randn(d...))
-#=
-e_H -> size of hidden state of the encoder
-d_H -> size of hidden state of the decoder
-z_size -> size of latent vector z
-V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
-num_mixture -> number of gaussian mixtures
-=#
-function initmodel(e_H::Int, d_H::Int, V::Int, z_size::Int, num_mixture::Int)
-  #initial hidden and cell states of forward encoder
-  model = Dict{Symbol, Any}()
-  info("Initializing encoder.")
-  initencoder(model, e_H, V)
-  info("Encoder was initialized. Initializing predecoder.")
-  initpredecoder(model, e_H, d_H, z_size)
-  info("Predecoder was initialized. Initializing decoder.")
-  initdecoder(model, d_H, V, num_mixture, z_size)
-  info("Decoder was initialized. Initializing shifts.")
-  initshifts(model, e_H, d_H, z_size)
-  info("Initialization complete.")
-  return model
-end
-
-function initshifts(model, e_H, d_H, z_size)
-  model[:fw_shifts] = getshifts(e_H)
-  model[:bw_shifts] = getshifts(e_H)
-  model[:dec_shifts] = getshifts(d_H)
-end
-
-function getshifts(h::Int)
-  alpha = initones(1, h)
-  beta  = initzeros(1, h)
-  return [ alpha, beta ]
-end
-
-#=
-model -> rnn model
-H -> size of hidden state of the encoder
-V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
-=#
-function initencoder(model, H::Int, V::Int)
-  #incoming input -> dims = (batchsize, V=5)
-  model[:fw_state0] = [initxav(1, H), initzeros(1, H)]
-  #model[:fw_embed] = initxav(V, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
-  #here x and hidden will be concatenated form lstm_input with dims = [batchsize, H]
-  model[:fw_encode] = [ initxav(H+V, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
-  #same analysis goes for the decoder
-  model[:bw_state0] = [initxav(1, H), initzeros(1, H)]
-  #model[:bw_embed] = initxav(V, H)
-  model[:bw_encode] = [ initxav(H+V, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
-end
-
-#=
-model -> rnn model
-e_H -> size of hidden state of the encoder
-d_H -> size of hidden state of the decoder
-z_size -> size of latent vector z
-=#
-function initpredecoder(model, e_H::Int, d_H::Int, z_size::Int)
-  #Incoming input dims = [batchsize, 2e_H]
-  model[:mu] = [initxav(2e_H, z_size), initzeros(1, z_size)] #mu = input * W_mu .+ b_mu -> dims = [batchsize, z_size]
-  model[:sigma_cap] = [initxav(2e_H, z_size), initzeros(1, z_size)] #sigma = input * W_sigma .+ b_sigma -> dims = [batchsize, z_size]
-  #perform z = mu .+ sigma*N(0, I) -> z_dims = [batchsize, z_size]
-  model[:z] = [initxav(z_size, 2d_H), initzeros(1, 2d_H)] # dec_H_0 = z*W_z .+ b_z -> dims = [batchsize, d_H]
-end
-
-#=
-model -> rnn model
-H -> size of hidden state of the decoder
-V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
-z_size -> size of latent vector z
-num_mixture -> number of gaussian mixtures
-=#
-function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int)
-  initxav(d...) = atype(xavier(d...))
-  #incoming input dims = [batchsize, z_size + V]
-#  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
-  model[:decode] = [ initxav(z_size+V+H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
-  model[:output] = [initxav(H, 6num_mixture + 3 ), initzeros(1, 6num_mixture + 3 )] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
-end
-
-function lstm(param, state, input; dprob=0)
-  weight, bias = param
-  hidden, cell = state
-  h = size(hidden, 2)
-  gates = hcat(input, hidden) * weight .+ bias
-  forget = sigm(gates[:, 1:h])
-  ingate = sigm(gates[:, 1+h:2h])
-  outgate = sigm(gates[:, 1+2h:3h])
-  change = tanh(gates[:, 1+3h:4h])
-  cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
-  hidden = outgate .* tanh(cell)
-  return (hidden, cell)
-end
-
-function normlayer(x, alpha, beta; epsilon=1e-3, mean = nothing, rstd = nothing) #speedup with precalculated mean and std?
-  #=
-  dims(x) = (batchsize, hiddensize)
-  dims(alpha) = dims(beta) = (1, hiddensize)
-  dims(mean) = dims(std) = (batchsize, 1)
-  =#
-  mean = sum(x, 2)/size(x, 2) #dims = [batchsize, 1] sum over hidden units
-  x_shifted = x .- mean
-  var = sum(x_shifted.*x_shifted, 2)/size(x_shifted, 2) #dims = [batchsize, 1] sum over hidden units
-  rstd = 1 ./ sqrt(var + epsilon)
-  return alpha .* x_shifted .* rstd .+ beta
-end
-
-function normlayerall(x, alpha, beta; epsilon=1e-3)
-  #todo
-end
-
-function lstm_lnorm(param, state, input, alpha, beta; dprob=0)
-  weight, bias = param
-  hidden, cell = state
-  h = size(hidden, 2)
-  gates = hcat(input, hidden) * weight .+ bias
-  forget = sigm(normlayer(gates[:, 1:h], alpha[1], beta[1]))
-  ingate = sigm(normlayer(gates[:, 1+h:2h], alpha[2], beta[2]))
-  outgate = sigm(normlayer(gates[:, 1+2h:3h], alpha[3], beta[3]))
-  change = tanh(normlayer(gates[:, 1+3h:4h], alpha[4], beta[4]))
-  cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
-  hidden = outgate .* tanh(normlayer(cell, alpha[5], beta[5]))
-  return (hidden, cell)
+  minlr::AbstractFloat
+  decayrate::AbstractFloat
 end
 
 #=
@@ -188,14 +58,19 @@ function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
   #forward encoder
+  w = AutoGrad.getval(model)
+  hasembed, hasshift = haskey(w, :fw_embed), haskey(w, :fw_shifts)
+  alpha, beta  = hasshift ? (model[:fw_shifts][1], model[:fw_shifts][2]) : (nothing, nothing)
   for i = 1:maxlen
-    #input = data[i] * model[:fw_embed]
-    statefw = lstm_lnorm(model[:fw_encode], statefw, data[i], model[:fw_shifts][1], model[:fw_shifts][2]; dprob=dprob)
+    input = hasembed ? data[i] * model[:fw_embed] : data[i]
+    statefw = lstm(model[:fw_encode], statefw, input; alpha=alpha, beta=beta, dprob=dprob)
   end
   #backward encoder
+  hasembed, hasshift = haskey(w, :bw_embed), haskey(w, :bw_shifts)
+  alpha, beta  = hasshift ? (model[:bw_shifts][1], model[:bw_shifts][2]) : (nothing, nothing)
   for i = maxlen:-1:1
-    #input = data[i]*model[:bw_embed]
-    statebw = lstm_lnorm(model[:bw_encode], statebw, data[i], model[:bw_shifts][1], model[:bw_shifts][2]; dprob=dprob)
+    input = hasembed ? data[i]*model[:bw_embed] : data[i]
+    statebw = lstm(model[:bw_encode], statebw, input; alpha=alpha, beta=beta, dprob=dprob)
   end
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
 end
@@ -230,7 +105,7 @@ end
 
 
 #sequence to sequence variational autoencoder
-function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
@@ -249,11 +124,16 @@ function s2sVAE(model, data, seqlen, wkl, kl_tolerance; epsilon = 1e-6, istraini
   state = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
   penstate_loss = 0
   offset_loss = 0
+  w = AutoGrad.getval(model)
+  hasembed, hasshift = haskey(w, :embed), haskey(w, :dec_shifts)
+  alpha, beta  = hasshift ? (model[:dec_shifts][1], model[:dec_shifts][2]) : (nothing, nothing)
   for i = 2:maxlen
     #dims data = [batchsize, V] = [batchsize, 5]
     input = hcat(data[i-1], z) #concatenate latent vector with previous point
-    #input = input * model[:embed]
-    state = lstm_lnorm(model[:decode], state, input, model[:dec_shifts][1], model[:dec_shifts][2]; dprob=dprob)
+    if hasembed
+      input = input * model[:embed]
+    end
+    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta, dprob=dprob)
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
@@ -282,22 +162,22 @@ function predict(param, input)
 end
 
 s2sVAEgrad = grad(s2sVAE)
-function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LRparameters, kl::KLparameters)
+function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
-      cur_wkl = kl.w - (kl.w - kl.weight_start) * ((kl.decay_rate)^step)
-      cur_lr = (lrp.lr - lrp.min_lr)*(lrp.decay_rate^step) + lrp.min_lr
+      cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+      cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
       x = perturb(trndata[i]; scalefactor=o[:scalefactor])
-      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl, kl.tolerance; dprob=o[:dprob])
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl; dprob=o[:dprob])
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
     end
-    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, kl.w, kl.tolerance)
+    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
     #save the best model
-    vld_cost = vld_rec_loss + kl.w * vld_kl_loss
+    vld_cost = vld_rec_loss + KL.w * vld_kl_loss
     if vld_cost < best_vld_cost
       best_vld_cost = vld_cost
       arrmodel = convertmodel(model)
@@ -307,7 +187,7 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LR
     #report losses
     @printf("vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
     #save every o[:save_every] epochs
-    if e%o[:save_every]==0
+    if e%o[:save_every] == 0
       arrmodel = convertmodel(model)
       save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
     end
@@ -316,6 +196,7 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o, lrp::LR
 
 end
 
+#random scaling of x and y values
 function perturb(data; scalefactor=0.1)
   pdata = []
   for i=1:length(data)
@@ -330,10 +211,10 @@ function perturb(data; scalefactor=0.1)
 end
 
 #calculates average reconstuction and KL losses
-function evaluatemodel(model, data, seqlens, wkl, kl_tolerance)
+function evaluatemodel(model, data, seqlens, wkl)
   rec_loss, kl_loss = 0, 0
   for i = 1:length(data)
-    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl, kl_tolerance; istraining = false)
+    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl; istraining = false)
     rec_loss += (penstate_loss + offset_loss)
     kl_loss += cur_kl_loss
   end
@@ -437,7 +318,7 @@ function main(args=ARGS)
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
     ("--lr"; arg_type=Float64; default=0.0001; help="Learning rate")
-    ("--min_lr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
+    ("--minlr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
     ("--lr_decay_rate"; arg_type=Float64; default=0.99999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
@@ -448,9 +329,10 @@ function main(args=ARGS)
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-  kl = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate], o[:kl_tolerance]) #Kullback-Leibler parameters
-  lrp = LRparameters(o[:lr], o[:min_lr], o[:lr_decay_rate]) #learning rate parameters
-  model = initmodel(o[:enc_rnn_size], o[:dec_rnn_size], o[:V], o[:z_size], o[:num_mixture])
+  global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
+  global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
+  global const kl_tolerance = o[:kl_tolerance]
+  model = initmodel(o)
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   if !o[:readydata]
@@ -471,7 +353,7 @@ function main(args=ARGS)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
-  train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o, lrp, kl)
+  train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o)
 end
 #main()
 if VERSION >= v"0.5.0-dev+7720"
@@ -481,6 +363,6 @@ else
 end
 
 export revconvertmodel, encode, loaddata
-export getlatentvector, lstm, predict
+export getlatentvector, predict
 export softmax, sample_gaussian_2d
 end
