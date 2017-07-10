@@ -14,25 +14,9 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=45, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.0, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=45, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
-function initpointvocab(sketches)
-  pointvocab = Dict{Tuple, Int}()
-  count = 0
-  for sketch in sketches
-    for i=1:size(sketch.points, 2)
-      x = sketch.points[1, i]
-      y = sketch.points[2, i]
-      if !haskey(pointvocab, (x,y))
-        count += 1
-        pointvocab[(x,y)] = count
-      end
-    end
-  end
-  info("Number of unique points $(count)")
-  return pointvocab
-end
 
 function getstrokes(drawing)
   points = Int[]
@@ -55,50 +39,50 @@ function getstrokes(drawing)
 end
 
 
-function initsketch(sketch_dict::Dict)
-  recognized = Bool(sketch_dict["recognized"])
+function getsketch(sketch_as_dict::Dict)
+  recognized = Bool(sketch_as_dict["recognized"])
   if !recognized
     return nothing #get only recognized sketches
   end
-  drawing = sketch_dict["drawing"]
-  label = String(sketch_dict["word"])
-  key_id = String(sketch_dict["key_id"])
+  drawing = sketch_as_dict["drawing"]
+  label = String(sketch_as_dict["word"])
+  key_id = String(sketch_as_dict["key_id"])
   points, end_indices = getstrokes(drawing)
   return Sketch(label, recognized, key_id, points, end_indices)
 end
 
-function getsketches(filename)
-  sketches = []
+function get_sketch_objects(filename)
+  sketch_objects = []
   open(filename, "r") do f
      while !eof(f)
-       sketch_dict = Dict()
-       sketch_text = readline(f)  # file information to string
-       sketch_dict=JSON.parse(sketch_text)  # parse and transform data
-       sketch = initsketch(sketch_dict)
+       sketch_as_dict = Dict()
+       sketch_as_text = readline(f)  # file information to string
+       sketch_as_dict = JSON.parse(sketch_as_text)  # parse and transform data
+       sketch = getsketch(sketch_as_dict)
        if sketch != nothing
-         push!(sketches, sketch)
+         push!(sketch_objects, sketch)
        end
      end
   end
-  return sketches
+  return sketch_objects
 end
 
-function getmaxlen(sketches)
+function getmaxlen(sketch_objects)
   #=returns maximum length of points=#
   maxlen = 0
-  for sketch in sketches
+  for sketch in sketch_objects
     maxlen = max(maxlen, size(sketch.points, 2))
   end
   return maxlen
 end
 
-function preprocess(sketches, params::Parameters)
+function preprocess(sketch_objects, params::Parameters)
   #=Remove sketches having > max_seq_length points or < min_seq_length=#
   rawpoints = []
   seqlen = Int[]
   sketchpoints3D = []
   countdata = 0
-  for sketch in sketches
+  for sketch in sketch_objects
     points = points_to_3d(sketch)
     len = size(points, 2)
     if len <= params.max_seq_length && len > params.min_seq_length
@@ -152,8 +136,6 @@ function restore(sketchpoints3D, scalefactor = nothing)
   return sketchpoints3D
 end
 
-function constructsketch()
-end
 
 function padbatch(batch, params::Parameters)
   max_len = params.max_seq_length
@@ -201,7 +183,7 @@ end
 function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params::Parameters=Parameters())
   filepath = "$datapath$filename"
   info("Retrieving sketches from $(filepath) file")
-  sketches = getsketches(filepath)
+  sketches = get_sketch_objects(filepath)
   info("Retrieving 3D points from sketches")
   sketchpoints3D, numbatches = preprocess(sketches, params)
   return sketchpoints3D, numbatches
@@ -230,7 +212,7 @@ function test()
   num = 5
   filename = "full_simplified_airplane.ndjson"
   filepath = "$datapath$filename"
-  sketches = getsketches(filepath)
+  sketches = get_sketch_objects(filepath)
   println("max_len=$(getmaxlen(sketches))")
   sketchpoints3D, numbatches = preprocess(sketches, params)
   trndata, vlddata, tstdata = splitdata(sketchpoints3D)
@@ -249,10 +231,18 @@ function test()
   println(copy_sketchpoints[1] == sketchpoints3D[1])
   #printcontents(sketches[num])
   #savesketch(sketches[num])
-  #initpointvocab(sketches)
 end
-#test()
-export getsketchpoints3D
+
+function main(args=ARGS)
+  test()
+end
+
+if VERSION >= v"0.5.0-dev+7720"
+    PROGRAM_FILE == "DataLoader.jl" && main(ARGS)
+else
+    !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
+end
+export getsketchpoints3D, get_sketch_objects
 export normalize!
 export getbatch
 export splitdata

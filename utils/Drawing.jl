@@ -9,6 +9,7 @@ type Sketch
   end_indices::Array
 end
 
+
 function points_to_3d(sketch::Sketch)
   #= Convert polyline format to 3-stroke format.=#
   pen_state = zeros(1, size(sketch.points, 2))
@@ -53,8 +54,8 @@ function clean_points(points; factor::Int=100)
   for i=1:len
     finish_flag = Int(points[5, i])
     if finish_flag == 0
-      x = Int(points[1, i]*factor)
-      y = Int(points[2, i]*factor)
+      x = Int(floor(points[1, i]*factor))
+      y = Int(floor(points[2, i]*factor))
       p1 = Int(points[3, i])
       p2 = Int(points[4, i])
       if copy_points == nothing
@@ -73,15 +74,6 @@ function clean_points(points; factor::Int=100)
   end
   printpoints(copy_points)
   return copy_points
-end
-
-function randomscale(data, scalefactor)
-  x_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
-  y_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
-  result = copy(data)
-  result[1, :] *= x_scalefactor
-  result[2, :] *= y_scalefactor
-  return result
 end
 
 function printpoints(points)
@@ -130,7 +122,7 @@ end
 
 function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1, mydpi=100, imsize=256, scaled = false)
   #Prints contents of current sketch
-  fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi, facecolor = "black")
+  fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
   strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
   #iterate through strokes
   for strokenum=1:(length(sketch.end_indices)-1)
@@ -140,16 +132,16 @@ function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1
     x = sketch.points[1, start_ind:end_ind]
     y = sketch.points[2, start_ind:end_ind]
     if strokenum <= strokelimit
-      plot(x, -y, linewidth = 1, color = "white")
+      plot(x, -y, linewidth = 1)
     else
-      plot(x, -y, linewidth = 1, color = "black")
+      plot(x, -y, linewidth = 1, color = "white")
     end
     if scaled
       subplots_adjust(bottom=0.,left=0.,right=1.,top=1.)
     end
     axis("off")
   end
-  savefig(filename, dpi=mydpi, facecolor= "black")
+  savefig(filename, dpi=mydpi)
 close()
 end
 export Sketch
