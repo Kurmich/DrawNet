@@ -3,8 +3,6 @@ module DrawNet
 using Drawing, DataLoader
 using Knet, ArgParse, JLD, AutoGrad
 include("../models/RNN.jl")
-global const datap = "../data/"
-global const pretrnp = "../pretrained/"
 
 type KLparameters
   w::AbstractFloat
@@ -75,7 +73,7 @@ function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
 end
 
-function get_mixparams(output, M::Int)
+function get_mixparams(output, M::Int; samplemode=false)
   #Here I used different ordering for outputs; in practice order doesn't matter
   pnorm = softmax(output[:, 1:M], 2) #normalized distribution probabilities
   mu_x = output[:, M+1:2M]
@@ -83,8 +81,12 @@ function get_mixparams(output, M::Int)
   sigma_x = exp(output[:, 3M+1:4M])
   sigma_y = exp(output[:, 4M+1:5M])
   rho = tanh(output[:, 5M+1:6M])
-  qlognorm = logp(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
-  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm
+  if samplemode
+    qnorm = softmax(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
+  else
+    qnorm = logp(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
+  end
+  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm
 end
 #=
 inputpoints - list of (1, 5) point tuples
@@ -271,7 +273,6 @@ function loaddata(filename)
   return dataset["train"], dataset["valid"], dataset["test"]
 end
 
-
 # initoptim creates optimization parameters for each numeric weight
 # array in the model.  This should work for a model consisting of any
 # combination of tuple/array/dict.
@@ -353,6 +354,7 @@ function main(args=ARGS)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
+  reportmodel(model)
   train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o)
 end
 #main()
@@ -363,6 +365,6 @@ else
 end
 
 export revconvertmodel, encode, loaddata
-export getlatentvector, predict
+export getlatentvector, predict, get_mixparams
 export softmax, sample_gaussian_2d
 end

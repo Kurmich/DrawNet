@@ -5,9 +5,8 @@ using DrawNet, Drawing
 using Distributions, PyPlot
 using Knet, ArgParse, JLD
 include("../models/RNN.jl")
-global const modelp = "../pretrained/"
-global const datap = "../data/"
-global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
+
+
 function constructsketch(points)
   points2D = zeros(2, size(points, 2)-1)
   endidxs = [0]
@@ -67,19 +66,6 @@ function sample_gaussian_2d(mu1, mu2, s1, s2, rho; temp = 1.0, greedy::Bool = fa
   return x, y
 end
 
-
-function get_mixparams(output, M::Int)
-  #Here I used different ordering for outputs; in practice order doesn't matter
-  pnorm = softmax(output[:, 1:M], 2) #normalized distribution probabilities
-  mu_x = output[:, M+1:2M]
-  mu_y = output[:, 2M+1:3M]
-  sigma_x = exp(output[:, 3M+1:4M])
-  sigma_y = exp(output[:, 4M+1:5M])
-  rho = tanh(output[:, 5M+1:6M])
-  qlognorm = softmax(output[:, 6M+1:6M+3], 2) #normalized log probabilities of logits
-  return pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm
-end
-
 function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = false)
   #=Samples sequence from pretrained model=#
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
@@ -107,7 +93,7 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
     end
     state = lstm(model[:decode], state, input; alpha=alpha, beta=beta)
     output =  predict(model[:output], state[1]) #get output params
-    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M) #get mixture parameters and normalized logit values
+    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M; samplemode=true) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
     idx_eos = get_pi_idx(rand(), qnorm; temp=temp, greedy=greedy)
     eos = [0 0 0]
@@ -119,17 +105,6 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
     prev_coords = atype(copy(cur_coords))
   end
   return points, mixture_params
-end
-
-function constructsketchwrong(points)
-  @assert(size(points, 1) == 5, "Needs (5, seqlen) matrices")
-  endidxs = find(points[3, :].==0) #get indexes of zero elements
-  println(size(endidxs))
-  endidxs = vcat([0], endidxs)
-  label = "sampled sketch"
-  recognized = false
-  key_id = "sampled sketch"
-  return Sketch(label, recognized, key_id, points[1:2, :], endidxs[1:end-1])
 end
 
 function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
@@ -146,12 +121,16 @@ function getrandomsketch(points3D)
   idx = rand(1:length(points3D))
   #idx = 2
   x_5D = to_big_points(points3D[idx]; max_len = 50)
-  batch = []
-  for i=1:size(x_5D, 2)
-    push!(batch, x_5D[:, i]')
-  end
+  sequence = makesequence(x_5D)
+  return map(a->convert(atype, a), sequence), x_5D
+end
 
-  return map(a->convert(atype, a), batch), x_5D
+function makesequence(points5D)
+  sequence = []
+  for i=1:size(points5D, 2)
+    push!(sequence, points5D[:, i]')
+  end
+  return sequence
 end
 
 function main(args=ARGS)
@@ -167,7 +146,7 @@ function main(args=ARGS)
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-  w = load("$(modelp)$(o[:model])")
+  w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
