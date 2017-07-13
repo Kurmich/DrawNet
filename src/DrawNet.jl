@@ -1,6 +1,7 @@
 include("../utils/DataLoader.jl")
+include("../idm/IDM.jl")
 module DrawNet
-using Drawing, DataLoader
+using Drawing, DataLoader, IDM
 using Knet, ArgParse, JLD, AutoGrad
 include("../models/RNN.jl")
 
@@ -107,7 +108,7 @@ end
 
 
 #sequence to sequence variational autoencoder
-function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+function s2sVAE(model, data, seqlen, wkl, avgim; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
@@ -115,6 +116,7 @@ function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = tru
   d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
   h = encode(model, data, maxlen, batchsize; dprob=dprob)
+  h = hcat(h, avgim)
   #predecoder step
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
@@ -164,7 +166,7 @@ function predict(param, input)
 end
 
 s2sVAEgrad = grad(s2sVAE)
-function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+function train(model, trndata, trnseqlens, vlddata, vldseqlens, trnavgidm, vldavgidm, opts, o)
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]
@@ -172,12 +174,12 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
       cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
       cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
       x = perturb(trndata[i]; scalefactor=o[:scalefactor])
-      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl; dprob=o[:dprob])
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl, atype(trnavgidm[i]); dprob=o[:dprob])
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
     end
-    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
+    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w, vldavgidm)
     #save the best model
     vld_cost = vld_rec_loss + KL.w * vld_kl_loss
     if vld_cost < best_vld_cost
@@ -213,10 +215,10 @@ function perturb(data; scalefactor=0.1)
 end
 
 #calculates average reconstuction and KL losses
-function evaluatemodel(model, data, seqlens, wkl)
+function evaluatemodel(model, data, seqlens, wkl, avg_im)
   rec_loss, kl_loss = 0, 0
   for i = 1:length(data)
-    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl; istraining = false)
+    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl, atype(avg_im[i]); istraining = false)
     rec_loss += (penstate_loss + offset_loss)
     kl_loss += cur_kl_loss
   end
@@ -227,12 +229,15 @@ function getdata(filename, params)
   return getsketchpoints3D(filename; params = params)
 end
 
-function minibatch(sketchpoints3D, numbatches, params)
+function minibatch(sketchpoints3D, idmtuples, numbatches, params)
   info("Minibatching")
   data = []
+  idm_data = []
   seqlens = []
+  println(typeof(idmtuples[1]))
   for i=0:(numbatches-1)
     x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
+    idm_batch = get_idm_batch(idmtuples, i, params)
     sequence = []
     for j=1:size(x_batch_5D, 2)
       points = x_batch_5D[:, j, :]'
@@ -240,8 +245,9 @@ function minibatch(sketchpoints3D, numbatches, params)
     end
     push!(data, sequence)
     push!(seqlens, seqlen)
+    push!(idm_data, idm_batch)
   end
-  return data, seqlens
+  return data, seqlens, idm_data
 end
 
 #update learning rate of parameters
@@ -263,6 +269,22 @@ function normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params::Parameter
   DataLoader.normalize!(tstpoints3D, params; scalefactor=params.scalefactor)
 end
 
+function normalizeidms!(trnidm, vldidm, tstidm)
+  s_avg, s_stroke = get_im_stds(trnidm)
+  normalizeall!(trnidm, s_avg, s_stroke)
+  normalizeall!(vldidm, s_avg, s_stroke)
+  normalizeall!(tstidm, s_avg, s_stroke)
+end
+
+function normalizeall!(idmobjs, s_avg, s_stroke)
+  for idm in idmobjs
+    for strokeim in idm.stroke_ims
+      strokeim /= s_stroke
+    end
+    idm.avg_im /= s_avg
+  end
+end
+
 function savedata(filename, trndata, vlddata, tstdata)
   rawname = split(filename, ".")[1]
   save("../data/$(rawname).jld","train", trndata, "valid", vlddata, "test", tstdata)
@@ -270,7 +292,12 @@ end
 
 function loaddata(filename)
   dataset = load(filename)
+  println(filename)
   return dataset["train"], dataset["valid"], dataset["test"]
+end
+
+function get_splitteddata(data, trnidx, vldidx, tstidx)
+  return data[trnidx], data[vldidx], data[tstidx]
 end
 
 # initoptim creates optimization parameters for each numeric weight
@@ -311,6 +338,7 @@ function main(args=ARGS)
     ("--grad_clip"; arg_type=Float64; default=1.0; help="Gradient clipping. Recommend leaving at 1.0.")
     ("--scalefactor"; arg_type=Float64; default=0.1; help="Random scaling data augmention proportion.")
     ("--num_mixture"; arg_type=Int; default=20; help="Number of mixtures in Gaussian mixture model.")
+    ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
     ("--z_size"; arg_type=Int; default=128; help="Size of latent vector z. Recommend 32, 64 or 128.")
     ("--dprob"; arg_type=Float64; default=0.1; help="Dropout probability(keep prob = 1 - dropoutprob).")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
@@ -337,25 +365,38 @@ function main(args=ARGS)
   params = Parameters()
   global optim = initoptim(model, o[:optimization])
   if !o[:readydata]
-    sketchpoints3D, numbatches = getdata(o[:filename], params)
-    trnpoints3D, vldpoints3D, tstpoints3D = splitdata(sketchpoints3D)
+    sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
+    trnidx, vldidx, tstidx = splitdata(sketchpoints3D)
+    info("data was split")
+    trnpoints3D, vldpoints3D, tstpoints3D = get_splitteddata(sketchpoints3D, trnidx, vldidx, tstidx)
+    trnsketches, vldsketches, tstsketches = get_splitteddata(sketches, trnidx, vldidx, tstidx)
+    info("getting idm objects")
+    trnidm = get_idm_objects(trnsketches; imlen = o[:imlen])
+    vldidm = get_idm_objects(vldsketches; imlen = o[:imlen])
+    tstidm = get_idm_objects(tstsketches; imlen = o[:imlen])
+    info("In nomralization phase")
     normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
-    savedata(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
+    normalizeidms!(trnidm, vldidm, tstidm)
+    savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
+    savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
+    savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
+    #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
   else
     println("Loading data for training!")
     trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
+    trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:dataset])")
   end
   trn_batch_count = div(length(trnpoints3D), params.batchsize)
   params.numbatches = trn_batch_count
-  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
+  trndata, trnseqlens, trnavgidm = minibatch(trnpoints3D, trnidm, trn_batch_count-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
-  vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
+  vlddata, vldseqlens, vldavgidm = minibatch(vldpoints3D, vldidm, vld_batch_count-1, params)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
   reportmodel(model)
-  train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o)
+  train(model, trndata, trnseqlens, vlddata, vldseqlens, trnavgidm, vldavgidm, optim, o)
 end
 #main()
 if VERSION >= v"0.5.0-dev+7720"
