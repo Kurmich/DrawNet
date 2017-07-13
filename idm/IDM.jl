@@ -1,15 +1,112 @@
-include("../utils/DataLoader.jl")
+#include("../utils/DataLoader.jl")
 #include("../utils/Drawing.jl")
 module IDM
 using DataLoader, Drawing
-using ArgParse, PyPlot
+using ArgParse, PyPlot, Images, JLD
 
+type IdmTuple
+  stroke_ims
+  avg_im
+end
+
+
+function save_idmtuples(filename, trndata, vlddata, tstdata)
+  rawname = split(filename, ".")[1]
+  trn_stroke_ims, vld_stroke_ims, tst_stroke_ims = get_stroke_ims(trndata), get_stroke_ims(vlddata), get_stroke_ims(tstdata)
+  trn_avg_ims, vld_avg_ims, tst_avg_ims = get_avg_ims(trndata), get_avg_ims(vlddata), get_avg_ims(tstdata)
+  save("../data/idmstroke$(rawname).jld","train", trn_stroke_ims, "valid", vld_stroke_ims, "test", tst_stroke_ims)
+  save("../data/idmavg$(rawname).jld","train", trn_stroke_ims, "valid", vld_stroke_ims, "test", tst_stroke_ims)
+end
+
+function get_stroke_ims(idmtuples)
+  all_stroke_ims = []
+  for idmt in idmtuples
+    push!(all_stroke_ims, idmt.stroke_ims)
+  end
+  return all_stroke_ims
+end
+
+function get_avg_ims(idmtuples)
+  avg_ims = []
+  for idmt in idmtuples
+    push!(avg_ims, idmt.avg_im)
+  end
+  return avg_ims
+end
+
+function load_idmtuples(filename)
+  stroke_ims = load("../data/idmstroke$(filename)")
+  avg_ims = load("../data/idmavg$(filename)")
+  assert(length(stroke_ims) == length(avg_ims), " avg im and stroke im lengths don't match")
+  trndata = construct_idm_tuples(stroke_ims["train"], avg_ims["train"])
+  vlddata = construct_idm_tuples(stroke_ims["valid"], avg_ims["valid"])
+  tstdata = construct_idm_tuples(stroke_ims["test"], avg_ims["test"])
+  return trndata, vlddata, tstdata
+end
+
+function construct_idm_tuples(stroke_ims, avg_ims)
+  idmtuples = IdmTuple[]
+  for i = 1:length(stroke_ims)
+    push!(idmtuples, IdmTuple(stroke_ims[i], avg_ims[i]))
+  end
+  return idmtuples
+end
+
+function get_im_stds(idmtuples)
+  datastroke = AbstractFloat[]
+  dataim = AbstractFloat[]
+  for idmtuple in idmtuples
+    for strokeim in idmtuple.stroke_ims
+      pushall!(datastroke, strokeim)
+    end
+    pushall!(dataim, idmtuple.avg_im)
+  end
+  return std(dataim), std(datastroke)
+end
+
+function pushall!(data, image)
+  for i = 1:length(image)
+    push!(data, image[i])
+  end
+end
+
+function get_idm_batch(idmtuples, idx, params::Parameters)
+  @assert(idx >= 0, "index must be nonnegative")
+  @assert(idx < params.numbatches, "index must be less number of batches")
+  start_ind = idx * params.batchsize
+  indices = (start_ind + 1):(start_ind + params.batchsize)
+  return idm_indices_to_batch(idmtuples, indices, params)
+end
+
+function idm_indices_to_batch(idmtuples, indices, params)
+  batch = []
+  avg_batch = nothing
+  for i in indices
+    idmtuple = idmtuples[i]
+    #println("$(size(idmtuple))")
+    lin_avg_img = reshape( idmtuple.avg_im, (1, length(idmtuple.avg_im)) )
+    if avg_batch == nothing
+      avg_batch = lin_avg_img
+    else
+      avg_batch = vcat(avg_batch, lin_avg_img)
+    end
+  end
+  return avg_batch
+end
 
 
 function normalize(points; d = 2)
   center = mean(points, d)
-  rstd = 1 ./ std(points, d)
-  return (points .- center) .* rstd
+  points = points .- center
+  if any(isnan, points)
+    error("Nan found after zero mean")
+  end
+  stdv = std(points, d)
+  if stdv[1] == 0 || stdv[2] == 0 || any(isnan, stdv)
+    return points
+  end
+#  println("std = $(stdv)")
+  return  points ./ stdv
 end
 
 function maxdist(points)
@@ -19,27 +116,27 @@ function maxdist(points)
   return maximum(sqrt(sumabs2(diff, 1)))
 end
 
-function resample_sketch(sketch::Sketch; coeff = 1.01, ratio = 50)
-  interval = ( coeff * maxdist(sketch.points) ) / ratio #spatial samling interval
-  end_indices = Int[]
-  points = nothing
+function resample(points, end_indices; coeff = 1.01, ratio = 50)
+  interval = ( coeff * maxdist(points) ) / ratio #spatial samling interval
+  end_idx = Int[]
+  new_points = nothing
   #starting index of first stroke is 0+1=1
-  push!(end_indices, 0)
-  for strokenum=1:(length(sketch.end_indices)-1)
-    start_ind = sketch.end_indices[strokenum]+1
-    end_ind = sketch.end_indices[strokenum+1]
-    newstroke, numpoints = resample_points(sketch.points; coeff = coeff, ratio = ratio, interval=interval, indices = start_ind:end_ind)
-    if points == nothing
-      points = newstroke
+  push!(end_idx, 0)
+  for strokenum=1:(length(end_indices)-1)
+    start_ind = end_indices[strokenum]+1 #start idx of stroke
+    end_ind = end_indices[strokenum+1] #end idx of stroke
+    newstroke, numpoints = resample_stroke(points; coeff = coeff, ratio = ratio, interval=interval, indices = start_ind:end_ind)
+    if new_points == nothing
+      new_points = newstroke
     else
-      points = hcat(points, newstroke)
+      new_points = hcat(new_points, newstroke)
     end
-    push!(end_indices, end_indices[end] + numpoints)
+    push!(end_idx, end_idx[end] + numpoints)
   end
-  return points, end_indices
+  return new_points, end_idx
 end
 
-function resample_points(points::Array; coeff = 1.01, ratio = 50, indices = 1:size(points,2), interval = nothing)
+function resample_stroke(points::Array; coeff = 1.01, ratio = 50, indices = 1:size(points,2), interval = nothing)
   #=points[indices] -> all points of a single stroke=#
   if interval == nothing
     interval = ( coeff * maxdist(points) ) / ratio #spatial samling interval
@@ -66,7 +163,7 @@ function resample_points(points::Array; coeff = 1.01, ratio = 50, indices = 1:si
       numpoints += 1
     end
   end
-  println("numpoints=$(numpoints) size newpoints = $(size(newpoints))")
+#  println("numpoints=$(numpoints) size newpoints = $(size(newpoints))")
   return newpoints, numpoints
 end
 
@@ -147,8 +244,9 @@ function markendpoints(points, end_indices, imsize)
   for strokenum=1:(length(end_indices)-1)
     start_ind = end_indices[strokenum]+1
     end_ind = end_indices[strokenum+1]
-    r_beg, c_beg = Int(round(points[2, start_ind])), Int(round(points[1, start_ind]))
-    r_end, c_end = Int(round(points[2, end_ind])), Int(round(points[1, end_ind]))
+  #  @printf("%g %g %g %g", points[2, start_ind],  points[1, start_ind], points[2, end_ind], points[1, end_ind] )
+    r_beg, c_beg = round(Int, points[2, start_ind]), round(Int, points[1, start_ind])
+    r_end, c_end = round(Int, points[2, end_ind]), round(Int, points[1, end_ind])
     image[r_beg, c_beg] = 1
     image[r_end, c_end] = 1
   end
@@ -185,9 +283,9 @@ function bresenham(x1, y1, x2, y2)
       q=zeros(1, dx+1)
   else
       q=[0 diff( mod( div(dx, 2):-dy:-dy*dx+div(dx, 2) , dx ) )  .>= 0]
-      println("here")
+  #    println("here")
   end
-  println("size q = $(size(q))")
+#  println("size q = $(size(q))")
   #and ends here.
 
   if steep
@@ -213,7 +311,7 @@ function bresenham(x1, y1, x2, y2)
       y=y1-cumsum(q);
     end
   end
-  println("x size =$(size(x)) y size = $(size(y)) ")
+#  println("x size =$(size(x)) y size = $(size(y)) ")
   return x, y
 end
 
@@ -244,11 +342,84 @@ function test()
   extract(sketch)
 end
 
+function downsample(image)
+  (nrows, ncols) = size(image)
+  result = zeros(div(nrows, 2), div(ncols, 2))
+  for i = 1:size(result, 1)
+    for j = 1:size(result, 2)
+      si = 2(i-1) + 1
+      sj = 2(j-1) + 1
+      result[i, j] = maximum(image[si:si+1, sj:sj+1])
+    end
+  end
+  return result
+end
+
+function extract(points, end_indices)
+  points, end_indices = resample_points()
+end
+
+function extract_avg_idm(points, end_indices; imlen = 24)
+  imsize = (imlen, imlen)
+  #avgim = zeros(imsize)
+  angles = [0, 45, 90, 135]
+  if any(isnan, points)
+    error("Nan found befrore resample")
+  end
+  points, end_indices = resample(points, end_indices)
+  if any(isnan, points)
+    error("Nan found after resample before normalization")
+  end
+  points = normalize(points; d=2)
+  thetas, thetaidx = coords2angles(points, end_indices)
+  if any(isnan, points)
+    error("Nan found after normalization")
+  end
+  points = transform(points; newmax = imlen-1)
+  if any(isnan, points)
+    error("Nan found after transform")
+  end
+  avgim = markendpoints(points, end_indices, imsize)
+  for angle in angles
+    pixelvals = get_pixelvals(thetas , angle)
+    image = points2im(points, end_indices, imsize, pixelvals, thetaidx)
+    avgim += image
+  end
+  return avgim/5;
+end
+
+function get_stroke_images(points, end_indices; imlen = 12)
+  strokeims = Any[]
+  for strokenum=1:(length(end_indices)-1)
+    start_ind = end_indices[strokenum]+1
+    end_ind = end_indices[strokenum+1]
+    stroke_end_indices = [0 (end_ind-start_ind+1)]
+    image =  extract_avg_idm(points[:, start_ind:end_ind],stroke_end_indices; imlen = imlen)
+    push!(strokeims, image)
+  end
+  return strokeims
+end
+
+function get_idm_objects(sketches; imlen = 12)
+  idmobjs = IdmTuple[]
+  for sketch in sketches
+    if any(isnan, sketch.points)
+      error("nan in data")
+    end
+    stroke_ims = get_stroke_images(sketch.points, sketch.end_indices)
+    avgim = extract_avg_idm(sketch.points, sketch.end_indices)
+    push!(idmobjs, IdmTuple(stroke_ims, avgim))
+  end
+  return idmobjs
+end
+
 function extract(sketch)
   imsize = (24,24)
-  avgim = zeros(imsize)
+  hsize = 3
+  sigma = 10
+  avgim = zeros((12,12))
   angles = [0, 45, 90, 135]
-  sketch.points, sketch.end_indices = resample_sketch(sketch)
+  sketch.points, sketch.end_indices = resample(sketch.points, sketch.end_indices)
   println("after resampling sketch points dims = $(size(sketch.points))")
   savesketch(sketch, "resampled.png")
   sketch.points = normalize(sketch.points; d=2)
@@ -260,9 +431,12 @@ function extract(sketch)
   image = markendpoints(sketch.points, sketch.end_indices, imsize)
   imshow(image , origin = "upper")
   savefig("idm_end.png")
+  gf = Kernel.gaussian([sigma, sigma], [hsize, hsize])
   for angle in angles
     pixelvals = get_pixelvals(thetas , angle)
     image = points2im(sketch.points, sketch.end_indices, imsize, pixelvals, thetaidx)
+    #image = imfilter(image, gf)
+    image = downsample(image)
     fig = figure()
     imshow(image , origin = "upper")
     savefig("idm$(angle).png")
@@ -283,6 +457,8 @@ function main(args=ARGS)
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--ratio"; arg_type=Float64; default=50.0; help="0.")
     ("--coeff"; arg_type=Float64; default=1.01; help="0.")
+    ("--datapath"; arg_type=String; default="../data/"; help="Number of epochs per checkpoint creation.")
+    ("--filename"; arg_type=String; default="full_simplified_airplane.ndjson"; help="Decoder: lstm, or ....")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -290,6 +466,12 @@ function main(args=ARGS)
   if o[:testmode]
     test()
   end
+  filepath = "$(o[:datapath])$(o[:filename])"
+  info("getting sketch objects")
+  sketches = get_sketch_objects(filepath)
+  info("now getting idm objects")
+  idmobjs = get_idm_objects(sketches)
+  info("idm objects were extracted successfully")
 end
 
 if VERSION >= v"0.5.0-dev+7720"
@@ -298,4 +480,6 @@ else
     !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
 end
 
+export get_im_stds, get_idm_objects, get_idm_batch
+export IdmTuple, save_idmtuples, load_idmtuples
 end
