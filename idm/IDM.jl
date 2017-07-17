@@ -9,49 +9,6 @@ type IdmTuple
   avg_im
 end
 
-
-function save_idmtuples(filename, trndata, vlddata, tstdata)
-  rawname = split(filename, ".")[1]
-  trn_stroke_ims, vld_stroke_ims, tst_stroke_ims = get_stroke_ims(trndata), get_stroke_ims(vlddata), get_stroke_ims(tstdata)
-  trn_avg_ims, vld_avg_ims, tst_avg_ims = get_avg_ims(trndata), get_avg_ims(vlddata), get_avg_ims(tstdata)
-  save("../data/idmstroke$(rawname).jld","train", trn_stroke_ims, "valid", vld_stroke_ims, "test", tst_stroke_ims)
-  save("../data/idmavg$(rawname).jld","train", trn_stroke_ims, "valid", vld_stroke_ims, "test", tst_stroke_ims)
-end
-
-function get_stroke_ims(idmtuples)
-  all_stroke_ims = []
-  for idmt in idmtuples
-    push!(all_stroke_ims, idmt.stroke_ims)
-  end
-  return all_stroke_ims
-end
-
-function get_avg_ims(idmtuples)
-  avg_ims = []
-  for idmt in idmtuples
-    push!(avg_ims, idmt.avg_im)
-  end
-  return avg_ims
-end
-
-function load_idmtuples(filename)
-  stroke_ims = load("../data/idmstroke$(filename)")
-  avg_ims = load("../data/idmavg$(filename)")
-  assert(length(stroke_ims) == length(avg_ims), " avg im and stroke im lengths don't match")
-  trndata = construct_idm_tuples(stroke_ims["train"], avg_ims["train"])
-  vlddata = construct_idm_tuples(stroke_ims["valid"], avg_ims["valid"])
-  tstdata = construct_idm_tuples(stroke_ims["test"], avg_ims["test"])
-  return trndata, vlddata, tstdata
-end
-
-function construct_idm_tuples(stroke_ims, avg_ims)
-  idmtuples = IdmTuple[]
-  for i = 1:length(stroke_ims)
-    push!(idmtuples, IdmTuple(stroke_ims[i], avg_ims[i]))
-  end
-  return idmtuples
-end
-
 function get_im_stds(idmtuples)
   datastroke = AbstractFloat[]
   dataim = AbstractFloat[]
@@ -80,20 +37,26 @@ end
 
 function idm_indices_to_batch(idmtuples, indices, params)
   batch = []
+  hsize = 3
+  sigma = 10
   avg_batch = nothing
+  lin_strokes = []
   for i in indices
-    idmtuple = idmtuples[i]
-    #println("$(size(idmtuple))")
-    lin_avg_img = reshape( idmtuple.avg_im, (1, length(idmtuple.avg_im)) )
+    lin_avg_img = idmtuples[i].avg_im
+    cur_stroke_list = []
+    for stroke_im in idmtuples[i].stroke_ims
+      push!(cur_stroke_list, reshape(stroke_im, (1, length(stroke_im)) ) )
+    end
+    push!(lin_strokes, cur_stroke_list)
+    lin_avg_img = reshape( lin_avg_img, (1, length(lin_avg_img)) )
     if avg_batch == nothing
       avg_batch = lin_avg_img
     else
       avg_batch = vcat(avg_batch, lin_avg_img)
     end
   end
-  return avg_batch
+  return avg_batch, lin_strokes
 end
-
 
 function normalize(points; d = 2)
   center = mean(points, d)
@@ -359,55 +322,48 @@ function extract(points, end_indices)
   points, end_indices = resample_points()
 end
 
-function extract_avg_idm(points, end_indices; imlen = 24)
+function extract_avg_idm(points, end_indices; imlen::Int = 24, smooth::Bool = true)
   imsize = (imlen, imlen)
   #avgim = zeros(imsize)
   angles = [0, 45, 90, 135]
+  hsize = 3
+  sigma = 10
+  gf = Kernel.gaussian([sigma, sigma], [hsize, hsize])
   if any(isnan, points)
     error("Nan found befrore resample")
   end
   points, end_indices = resample(points, end_indices)
-  if any(isnan, points)
-    error("Nan found after resample before normalization")
-  end
   points = normalize(points; d=2)
   thetas, thetaidx = coords2angles(points, end_indices)
-  if any(isnan, points)
-    error("Nan found after normalization")
-  end
   points = transform(points; newmax = imlen-1)
-  if any(isnan, points)
-    error("Nan found after transform")
-  end
   avgim = markendpoints(points, end_indices, imsize)
+  avgim = smooth? imfilter(avgim, gf) : (avgim)
   for angle in angles
     pixelvals = get_pixelvals(thetas , angle)
     image = points2im(points, end_indices, imsize, pixelvals, thetaidx)
+    image = smooth? imfilter(image, gf) : (image)
     avgim += image
   end
-  return avgim/5;
+  return avgim/5
 end
 
-function get_stroke_images(points, end_indices; imlen = 12)
+function get_stroke_images(points, end_indices; imlen::Int = 12, smooth::Bool = true)
   strokeims = Any[]
   for strokenum=1:(length(end_indices)-1)
     start_ind = end_indices[strokenum]+1
     end_ind = end_indices[strokenum+1]
     stroke_end_indices = [0 (end_ind-start_ind+1)]
-    image =  extract_avg_idm(points[:, start_ind:end_ind],stroke_end_indices; imlen = imlen)
+    image =  extract_avg_idm(points[:, start_ind:end_ind],stroke_end_indices; imlen = imlen, smooth = smooth)
     push!(strokeims, image)
   end
   return strokeims
 end
 
-function get_idm_objects(sketches; imlen = 12)
+function get_idm_objects(sketches; imlen::Int = 12, smooth::Bool = true)
   idmobjs = IdmTuple[]
   for sketch in sketches
-    if any(isnan, sketch.points)
-      error("nan in data")
-    end
-    stroke_ims = get_stroke_images(sketch.points, sketch.end_indices)
-    avgim = extract_avg_idm(sketch.points, sketch.end_indices)
+    stroke_ims = get_stroke_images(sketch.points, sketch.end_indices; imlen = imlen, smooth=smooth)
+    avgim = extract_avg_idm(sketch.points, sketch.end_indices; imlen = imlen, smooth=smooth)
     push!(idmobjs, IdmTuple(stroke_ims, avgim))
   end
   return idmobjs
@@ -482,4 +438,5 @@ end
 
 export get_im_stds, get_idm_objects, get_idm_batch
 export IdmTuple, save_idmtuples, load_idmtuples
+export idm_indices_to_batch
 end

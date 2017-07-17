@@ -4,6 +4,7 @@ module Drawer
 using DrawNet, Drawing
 using Distributions, PyPlot
 using Knet, ArgParse, JLD
+using IDM
 include("../models/RNN.jl")
 
 
@@ -41,7 +42,7 @@ function get_pi_idx(x, pdf; temp=1.0, greedy::Bool = false)
     maxval, maxind = findmax(pdf)
     return maxind
   end
-  println("probability sum $(sum(pdf))")
+  #println("probability sum $(sum(pdf))")
   pdf = adjust_temp(copy(pdf), temp)
   accumulate = 0
   for i=1:length(pdf)
@@ -117,12 +118,15 @@ function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, gre
   end
 end
 
-function getrandomsketch(points3D)
+function getrandomsketch(points3D, idmtuples)
   idx = rand(1:length(points3D))
-  #idx = 2
+  idx = 1339
+  info("Selected index is $(idx)")
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   sequence = makesequence(x_5D)
-  return map(a->convert(atype, a), sequence), x_5D
+  avidm, strokeidms = idm_indices_to_batch(idmtuples, idx, nothing)
+  sequence = paddall([sequence], [(avidm, strokeidms)], 24)
+  return map(a->convert(atype, a), sequence[1]), x_5D
 end
 
 function makesequence(points5D)
@@ -142,6 +146,7 @@ function main(args=ARGS)
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
+    ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -149,9 +154,10 @@ function main(args=ARGS)
   w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
   info("Model was loaded")
-  trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)$(o[:dataset])")
+  trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
+  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   info("Train, Valid, Test data obtained")
-  x, x_5D  = getrandomsketch(tstpoints3D)
+  x, x_5D  = getrandomsketch(tstpoints3D, tstidm)
   sketch = constructsketch(x_5D)
   info("Random sketch was obtained")
   savesketch(sketch, "original.png")
