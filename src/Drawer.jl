@@ -118,12 +118,22 @@ function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, gre
   end
 end
 
-function getrandomsketch(points3D, idmtuples)
+function getrandomsketch(points3D, idmtuples; tosave = true)
   idx = rand(1:length(points3D))
-  idx = 1339
+  #idx  = 2889
+  #idx = 58
+#  idx = 1339
   info("Selected index is $(idx)")
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   sequence = makesequence(x_5D)
+  if tosave
+    i = 1
+    for im in idmtuples[idx].stroke_ims
+      saveidm(im,"strokeidms/idm$(idx)-$(i).png")
+      i += 1
+    end
+    saveidm(idmtuples[idx].avg_im, "strokeidms/idm$(idx)-avg.png")
+  end
   avidm, strokeidms = idm_indices_to_batch(idmtuples, idx, nothing)
   sequence = paddall([sequence], [(avidm, strokeidms)], 24)
   return map(a->convert(atype, a), sequence[1]), x_5D

@@ -241,6 +241,7 @@ end
 
 #random scaling of x and y values
 function perturb(data; scalefactor=0.1)
+  hasidm = size(data[1], 2) > 5
   pdata = []
   for i=1:length(data)
     x_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
@@ -248,6 +249,11 @@ function perturb(data; scalefactor=0.1)
     result = copy(data[i])
     result[:, 1] *= x_scalefactor
     result[:, 2] *= y_scalefactor
+    #perturb idm if needed
+    if hasidm
+      idm_scalefactor = (rand() - 0.5) * 2 * scalefactor + 1.0
+      result[:, 6:size(data[i], 2)] *= scalefactor
+    end
     push!(pdata, result)
   end
   return pdata

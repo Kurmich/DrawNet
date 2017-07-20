@@ -405,6 +405,14 @@ function extract(sketch)
   close()
 end
 
+
+function saveidm(im, name)
+  fig = figure()
+  imshow(im , origin = "upper")
+  savefig(name)
+  close()
+end
+
 function main(args=ARGS)
   s = ArgParseSettings()
   s.description="A Visual Approach to Sketched Symbol Recognition. (c) Kurmanbek Kaiyrbekov 2017."
@@ -438,5 +446,5 @@ end
 
 export get_im_stds, get_idm_objects, get_idm_batch
 export IdmTuple, save_idmtuples, load_idmtuples
-export idm_indices_to_batch
+export idm_indices_to_batch, saveidm
 end

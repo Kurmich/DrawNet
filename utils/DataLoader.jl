@@ -81,6 +81,7 @@ function preprocess(sketch_objects, params::Parameters)
   rawpoints = []
   seqlen = Int[]
   sketchpoints3D = []
+  filtered_sketches = []
   countdata = 0
   for sketch in sketch_objects
     points = points_to_3d(sketch)
@@ -91,18 +92,21 @@ function preprocess(sketch_objects, params::Parameters)
       #remove large gaps from data?
       points[1:2, :] /= params.scalefactor
       push!(rawpoints, points)
+      push!(filtered_sketches, sketch)
       push!(seqlen, len)
     end
   end
   #sorted order according to sequence lengths
   idx = sortperm(seqlen)
+  sketches = []
   for i=1:length(seqlen)
     push!(sketchpoints3D, rawpoints[idx[i]])
+    push!(sketches, filtered_sketches[idx[i]])
   end
   println("total images <= max_seq_length($(params.max_seq_length)) is $(countdata)")
   params.numbatches = div(countdata, params.batchsize)
   #=returns in stroke-3 format=#
-  return sketchpoints3D, params.numbatches
+  return sketchpoints3D, params.numbatches, sketches
 end
 
 function get_scalefactor(sketchpoints3D; max_seq_length::Int=250)
@@ -185,8 +189,8 @@ function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params:
   info("Retrieving sketches from $(filepath) file")
   sketches = get_sketch_objects(filepath)
   info("Retrieving 3D points from sketches")
-  sketchpoints3D, numbatches = preprocess(sketches, params)
-  return sketchpoints3D, numbatches
+  sketchpoints3D, numbatches, sketches = preprocess(sketches, params)
+  return sketchpoints3D, numbatches, sketches
 end
 
 #splits data to train, validation and test sets
@@ -204,7 +208,7 @@ function splitdata(sketchpoints3D; trn = 0.9, vld = 0.05, tst=0.05)
   start += vldcount
   tstidx = perm[start:min(start + tstcount, length(sketchpoints3D))]
   #return trn, vld, tst sketch datasets
-  return sketchpoints3D[trnidx], sketchpoints3D[vldidx], sketchpoints3D[tstidx]
+  return trnidx, vldidx, tstidx
 end
 
 function test()
