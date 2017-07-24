@@ -201,6 +201,112 @@ function train(model, trndata, trnseqlens, vlddata, vldseqlens, trnidmtuples, vl
   end
 end
 
+#sequence to sequence variational autoencoder
+function stroke_s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+  #model settings
+  maxlen = maximum(seqlen) #maximum length of the input sequence
+  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+  (batchsize, V) = size(data[1])
+  V = 5
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
+  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
+  h = encode(model, data, maxlen, batchsize; dprob=dprob)
+#  h = hcat(h, avgim)
+  #predecoder step
+  mu = h*model[:mu][1] .+ model[:mu][2]
+  sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
+  sigma = exp( sigma_cap/2 )
+  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0.0, std=1.0) )
+
+  #decoder step
+  hc = tanh(z * model[:z][1] .+ model[:z][2])
+  state = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
+  penstate_loss = 0
+  offset_loss = 0
+  w = AutoGrad.getval(model)
+  hasembed, hasshift = haskey(w, :embed), haskey(w, :dec_shifts)
+  alpha, beta  = hasshift ? (model[:dec_shifts][1], model[:dec_shifts][2]) : (nothing, nothing)
+  for i = 2:maxlen
+    #dims data = [batchsize, V] = [batchsize, 5]
+    input = hcat(data[i-1][:, 1:V], z) #concatenate latent vector with previous point
+    if hasembed
+      input = input * model[:embed]
+    end
+    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta, dprob=dprob)
+    output =  predict(model[:output], state[1]) #get output params
+    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
+    mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
+    mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
+    offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
+    if istraining
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm) #L_p on paper
+    else
+      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm .* mask) #L_p on paper
+    end
+  end
+  offset_loss /= (maxlen * batchsize)
+  penstate_loss /= (maxlen * batchsize)
+  kl_loss = -sum((1 + sigma_cap - mu.*mu - exp(sigma_cap))) / (2*z_size*batchsize)   #Kullback-Leibler divergence loss term
+  if istraining
+    kl_loss = max(kl_loss, kl_tolerance)
+  else
+    return penstate_loss, offset_loss, kl_loss
+  end
+  loss = offset_loss + penstate_loss + wkl*kl_loss
+  return loss
+end
+
+
+stroke_s2sVAEgrad = grad(stroke_s2sVAE)
+function stroke_train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+  cur_wkl, step, cur_lr = 0, 0, 0
+  best_vld_cost = 100000
+  for e = 1:o[:epochs]
+    for i = 1:length(trndata)
+      cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+      cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
+      for j = 1:length(trndata[i])
+        x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
+        grads = stroke_s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i][j], cur_wkl,; dprob=o[:dprob])
+        updatelr!(opts, cur_lr)
+        update!(model, grads, opts)
+      end
+      step += 1
+    end
+    (vld_rec_loss, vld_kl_loss) = stroke_evaluatemodel(model, vlddata, vldseqlens, KL.w)
+    #save the best model
+    vld_cost = vld_rec_loss + KL.w * vld_kl_loss
+    if vld_cost < best_vld_cost
+      best_vld_cost = vld_cost
+      arrmodel = convertmodel(model)
+      println("Epoch: $(e) saving best model to $(pretrnp)$(o[:bestmodel])")
+      save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
+    end
+    #report losses
+    @printf("vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
+    #save every o[:save_every] epochs
+    if e%o[:save_every] == 0
+      arrmodel = convertmodel(model)
+      save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
+    end
+    flush(STDOUT)
+  end
+end
+
+function stroke_evaluatemodel(model, data, seqlens, wkl)
+  rec_loss, kl_loss = 0, 0
+  count = 0
+  for i = 1:length(data)
+    for j = 1:length(data[i])
+      penstate_loss, offset_loss, cur_kl_loss = stroke_s2sVAE(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], wkl; istraining = false)
+      rec_loss += (penstate_loss + offset_loss)
+      kl_loss += cur_kl_loss
+      count += 1
+    end
+  end
+  return rec_loss/count, kl_loss/count
+end
+
 function paddall(data, idmtuples, imlen)
   println("padding idms")
   newdata = []
@@ -275,6 +381,8 @@ function getdata(filename, params)
   return getsketchpoints3D(filename; params = params)
 end
 
+
+
 function minibatch(sketchpoints3D, idmtuples, numbatches, params)
   info("Minibatching")
   data = []
@@ -295,6 +403,89 @@ function minibatch(sketchpoints3D, idmtuples, numbatches, params)
   end
   return data, seqlens, idm_data
 end
+
+
+function stroke_minibatch(sketchpoints3D, numbatches, params)
+  #=stroke level minibatching=#
+  info("Stroke minibatching")
+  data = []
+  idm_data = []
+  seqlens = []
+  for i=0:(numbatches-1)
+    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
+    strokeseq, seqlen = getstrokeseqs(x_batch_5D)
+    push!(data, strokeseq)
+    push!(seqlens, seqlen)
+  end
+  return data, seqlens
+end
+
+function getstrokeseqs(x_batch_5D)
+  max_stroke_count = 1
+  (V, maxlen, batchsize)  = size(x_batch_5D)
+  strokecount = zeros(1, batchsize)
+  end_indices = []
+  for i=1:batchsize
+    push!(end_indices, find(x_batch_5D[4, :, i] .== 1) )
+    strokecount[i] = Int( sum(x_batch_5D[4, :, i]) )
+    max_stroke_count = max(max_stroke_count, strokecount[i])
+  end
+  max_stroke_count = Int(max_stroke_count)
+  stroke_start = ones(Int, 1, batchsize)
+  stroke_batch = []
+  seqlens = []
+  for i=1:max_stroke_count
+    #find an i'th stroke with maximum length
+    max_stroke_len = 1
+    for j = 1:batchsize
+      if i > length(end_indices[j])
+        continue
+      end
+      max_stroke_len = max(max_stroke_len, length(stroke_start[j] : end_indices[j][i]) )
+    end
+    apstroke = [zeros(batchsize, V)]
+    for j = 1:batchsize
+      apstroke[1][j, 3] = 1
+    end
+    #predefine i'th strokes points
+    stroke = []
+    for k = 1:max_stroke_len
+      push!(stroke, zeros(batchsize, V))
+    end
+
+    #for each batch element initialize its corresponding stroke
+    for j = 1:batchsize
+      x5D = x_batch_5D[:, :, j]' #  This is current sketch points dims = [maxlen, V]
+
+      #if there are no strokes left for current sketch
+      if i > length(end_indices[j])
+        for k = 1:length(stroke)
+          stroke[k][j, :] = [0 0 0 0 1]
+        end
+        continue
+      end
+      s = stroke_start[j] #starting index i'th stroke of j'th sketch
+      e = end_indices[j][i] #ending index of i'th stroke of j'th sketch
+      #init points
+      for k = s:e
+      #  println("$(size(stroke[k-stroke_start[j]+1][j, :]))  $(size(x5D[k, :]))")
+        stroke[k-s+1][j, :] = x5D[k, :]
+      end
+      #pad ends if needed
+      for k = (e-s+2):length(stroke)
+        stroke[k][j, :] = [0 0 0 1 0]
+      end
+      #DONOT FORGET TO MODIFY START[j]
+      stroke_start[j] = end_indices[j][i] + 1
+    end
+    append!(apstroke, stroke)
+    push!(seqlens, max_stroke_len+1)
+    push!(stroke_batch, apstroke)
+  end
+  return stroke_batch, seqlens
+end
+
+
 
 #update learning rate of parameters
 function updatelr!(opts::Associative, cur_lr)
@@ -431,22 +622,22 @@ function main(args=ARGS)
   else
     println("Loading data for training!")
     trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
-    trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
+  #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   end
   trn_batch_count = div(length(trnpoints3D), params.batchsize)
   params.numbatches = trn_batch_count
-  trndata, trnseqlens, trnidmtuples = minibatch(trnpoints3D, trnidm, trn_batch_count-1, params)
+  trndata, trnseqlens = stroke_minibatch(trnpoints3D, trn_batch_count-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
-  vlddata, vldseqlens, vldidmtuples = minibatch(vldpoints3D, vldidm, vld_batch_count-1, params)
+  vlddata, vldseqlens= stroke_minibatch(vldpoints3D, trn_batch_count-1, params)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
   reportmodel(model)
-  trndata = paddall(trndata, trnidmtuples, o[:imlen])
-  vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
-  info("padding was complete")
-  train(model, trndata, trnseqlens, vlddata, vldseqlens, trnidmtuples, vldidmtuples, optim, o)
+#  trndata = paddall(trndata, trnidmtuples, o[:imlen])
+  #vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
+  #info("padding was complete")
+  stroke_train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o)
 end
 #main()
 if VERSION >= v"0.5.0-dev+7720"
