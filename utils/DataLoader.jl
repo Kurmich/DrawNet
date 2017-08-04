@@ -84,7 +84,7 @@ function preprocess(sketch_objects, params::Parameters)
   filtered_sketches = []
   countdata = 0
   for sketch in sketch_objects
-    points = points_to_3d(sketch)
+    points = stroke_points_to_3d(sketch) #HERE STROKE POINTS
     len = size(points, 2)
     if len <= params.max_seq_length && len > params.min_seq_length
       #points = to_big_points(points)

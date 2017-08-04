@@ -263,15 +263,15 @@ function stroke_train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
   best_vld_cost = 100000
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
-      cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
-      cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
       for j = 1:length(trndata[i])
+        cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+        cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
         x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
         grads = stroke_s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i][j], cur_wkl,; dprob=o[:dprob])
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
+        step += 1
       end
-      step += 1
     end
     (vld_rec_loss, vld_kl_loss) = stroke_evaluatemodel(model, vlddata, vldseqlens, KL.w)
     #save the best model
@@ -445,7 +445,12 @@ function getstrokeseqs(x_batch_5D)
     end
     apstroke = [zeros(batchsize, V)]
     for j = 1:batchsize
-      apstroke[1][j, 3] = 1
+      #if there are no strokes left
+      if i > length(end_indices[j])
+        apstroke[1][j, 5] = 1
+      else
+        apstroke[1][j, 3] = 1
+      end
     end
     #predefine i'th strokes points
     stroke = []
@@ -455,7 +460,7 @@ function getstrokeseqs(x_batch_5D)
 
     #for each batch element initialize its corresponding stroke
     for j = 1:batchsize
-      x5D = x_batch_5D[:, :, j]' #  This is current sketch points dims = [maxlen, V]
+      x5D = x_batch_5D[:, :, j]' # This is current sketch points dims = [maxlen, V]
 
       #if there are no strokes left for current sketch
       if i > length(end_indices[j])
@@ -473,7 +478,7 @@ function getstrokeseqs(x_batch_5D)
       end
       #pad ends if needed
       for k = (e-s+2):length(stroke)
-        stroke[k][j, :] = [0 0 0 1 0]
+        stroke[k][j, :] = [0 0 0 0 1]
       end
       #DONOT FORGET TO MODIFY START[j]
       stroke_start[j] = end_indices[j][i] + 1
@@ -563,7 +568,7 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=500; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
     ("--filename"; arg_type=String; default="full_simplified_airplane.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
@@ -580,7 +585,7 @@ function main(args=ARGS)
     ("--dprob"; arg_type=Float64; default=0.1; help="Dropout probability(keep prob = 1 - dropoutprob).")
     ("--V"; arg_type=Int; default=5; help="Number of elements in point vector.")
     ("--wkl"; arg_type=Float64; default=1.0; help="Parameter weight for Kullback-Leibler loss.")
-    ("--kl_tolerance"; arg_type=Float64; default=0.2; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
+    ("--kl_tolerance"; arg_type=Float64; default=0.05; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
     ("--lr"; arg_type=Float64; default=0.0001; help="Learning rate")
@@ -629,7 +634,7 @@ function main(args=ARGS)
   trndata, trnseqlens = stroke_minibatch(trnpoints3D, trn_batch_count-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
-  vlddata, vldseqlens= stroke_minibatch(vldpoints3D, trn_batch_count-1, params)
+  vlddata, vldseqlens= stroke_minibatch(vldpoints3D, vld_batch_count-1, params)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")
