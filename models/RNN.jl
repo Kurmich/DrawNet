@@ -1,9 +1,23 @@
 
+
+global const pretrnp = "../pretrained/"
+global const datap = "../data/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
 initones(d...) = atype(ones(d...))
 initrandn(winit=0.0001, d...) = atype(winit*randn(d...))
+
+
+
+function reportmodel(model)
+  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
+  e_H = size(model[:fw_state0][2], 2)
+  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
+  @printf("Num of mixtures: %d, num of encoder units: %d , num of decoder units: %d, latent vector size: %d \n", M, e_H, d_H, z_size)
+end
+
 #=
 e_H -> size of hidden state of the encoder
 d_H -> size of hidden state of the decoder
@@ -15,13 +29,14 @@ function initmodel( o )
   #initial hidden and cell states of forward encoder
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
+  imlen = 0
   model = Dict{Symbol, Any}()
   info("Initializing encoder.")
-  initencoder(model, e_H, V)
+  initencoder(model, e_H, V, imlen)
   info("Encoder was initialized. Initializing predecoder.")
-  initpredecoder(model, e_H, d_H, z_size)
+  initpredecoder(model, e_H, d_H, z_size, imlen)
   info("Predecoder was initialized. Initializing decoder.")
-  initdecoder(model, d_H, V, num_mixture, z_size)
+  initdecoder(model, d_H, V, num_mixture, z_size, imlen)
   info("Decoder was initialized. Initializing shifts.")
   initshifts(model, e_H, d_H, z_size)
   info("Initialization complete.")
@@ -45,15 +60,15 @@ model -> rnn model
 H -> size of hidden state of the encoder
 V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
 =#
-function initencoder(model, H::Int, V::Int)
+function initencoder(model, H::Int, V::Int, imlen::Int)
   #incoming input -> dims = (batchsize, V=5)
   model[:fw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:fw_embed] = initxav(V, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
+  model[:fw_embed] = initxav(V + imlen^2, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
   #here x and hidden will be concatenated form lstm_input with dims = [batchsize, H]
   model[:fw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
   #same analysis goes for the decoder
   model[:bw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:bw_embed] = initxav(V, H)
+  model[:bw_embed] = initxav(V+imlen^2, H)
   model[:bw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
 end
 
@@ -63,7 +78,7 @@ e_H -> size of hidden state of the encoder
 d_H -> size of hidden state of the decoder
 z_size -> size of latent vector z
 =#
-function initpredecoder(model, e_H::Int, d_H::Int, z_size::Int)
+function initpredecoder(model, e_H::Int, d_H::Int, z_size::Int, imlen::Int)
   #Incoming input dims = [batchsize, 2e_H]
   model[:mu] = [initxav(2e_H, z_size), initzeros(1, z_size)] #mu = input * W_mu .+ b_mu -> dims = [batchsize, z_size]
   model[:sigma_cap] = [initxav(2e_H, z_size), initzeros(1, z_size)] #sigma = input * W_sigma .+ b_sigma -> dims = [batchsize, z_size]
@@ -78,11 +93,11 @@ V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
 z_size -> size of latent vector z
 num_mixture -> number of gaussian mixtures
 =#
-function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int)
+function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int, imlen::Int)
   initxav(d...) = atype(xavier(d...))
   #incoming input dims = [batchsize, z_size + V]
 #  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
-  model[:decode] = [ initxav(z_size+V+H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+  model[:decode] = [ initxav(z_size + V + H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
   model[:output] = [ initxav(H, 6num_mixture + 3 ), initzeros(1, 6num_mixture + 3 ) ] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
 end
 
