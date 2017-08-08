@@ -29,25 +29,31 @@ function constructsketch(points)
 end
 
 function stroke_constructsketch(points)
-  points2D = zeros(2, size(points, 2)-1)
   endidxs = [0]
-  x = 0
-  y = 0
-  for i=1:size(points, 2)-1
-    x += Float64(points[1, i])
-    y += Float64(points[2, i])
-    points2D[1, i] = x
-    points2D[2, i] = y
-    if points[3, i] == 0
-      push!(endidxs, i)
-      x = 0
-      y = 0
+  allpoints = nothing
+  for stroke in points
+    points2D = zeros(2, size(stroke, 2)-1)
+    x = 0
+    y = 0
+    for i=1:size(stroke, 2)-1
+      x += Float64(stroke[1, i])
+      y += Float64(stroke[2, i])
+      points2D[1, i] = x
+      points2D[2, i] = y
+      if stroke[3, i] == 0
+        push!(endidxs, endidxs[end] + i)
+      end
+    end
+    if allpoints == nothing
+      allpoints = points2D
+    else
+      allpoints = hcat(allpoints, points2D)
     end
   end
   label = "sampled sketch"
   recognized = false
   key_id = "sampled sketch"
-  return Sketch(label, recognized, key_id, points2D, endidxs)
+  return Sketch(label, recognized, key_id, allpoints, endidxs)
 end
 
 function adjust_temp(pipdf, temp)
@@ -142,17 +148,14 @@ end
 
 function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
   max_seq_length = 50
-  sampled_points = nothing
+  sampled_points = []
   for i in 1:length(z_vecs)
     z = z_vecs[i]
     len = lens[i]
     sampled_stroke_points, mixture_params = sample(model, z; seqlen=len + 5,temperature=temperature, greedy_mode=greedy_mode)
     sampled_stroke_points = stroke_clean_points(sampled_stroke_points)
-    if sampled_points == nothing
-      sampled_points = sampled_stroke_points
-    else
-      sampled_points = hcat(sampled_points, sampled_stroke_points)
-    end
+    println(size(sampled_stroke_points))
+    push!(sampled_points, sampled_stroke_points)
   end
   #sampled_points = stroke_clean_points(sampled_points)
   sketch = stroke_constructsketch(sampled_points)
@@ -166,7 +169,6 @@ function getrandomsketch(points3D, idmtuples; tosave = true)
   #idx  = 2889
   #idx = 58
 #  idx = 1339
-  idx = 840
   info("Selected index is $(idx)")
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   sequence = makesequence(x_5D)
@@ -185,6 +187,7 @@ end
 
 function makesequence(points5D)
   sequence = []
+  push!(sequence, [0 0 1 0 0])
   for i=1:size(points5D, 2)
     push!(sequence, points5D[:, i]')
   end
@@ -194,6 +197,7 @@ end
 
 function rand_strokesketch(points3D)
   idx = rand(1:length(points3D))
+#  idx = 840
   #idx  = 2889
   #idx = 58
 #  idx = 1339
@@ -206,11 +210,11 @@ function rand_strokesketch(points3D)
   strokeseq = []
   sseqlens = []
   for i = 1:strokecount
-    tmp = makesequence(x_5D[:, stroke_start:end_indices[i]])
+    tmp = makesequence(x_5D[:, stroke_start:end_indices[i]]) #IS THIS CORRECT? what about [0,0,0,1,0]?
     stroke_as_seq =  map(a->convert(atype, a), tmp)
     push!(strokeseq, stroke_as_seq)
     push!(sseqlens, length(stroke_start:end_indices[i]))
-    stroke_start = end_indices[i]
+    stroke_start = end_indices[i] + 1
   end
   return strokeseq, sseqlens, x_5D
 end
@@ -244,7 +248,16 @@ function main(args=ARGS)
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   info("Train, Valid, Test data obtained")
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
-  sketch = constructsketch(x_5D)
+  end_indices =  find(x_5D[4, :] .== 1)
+  s = 1
+  strokes = []
+  for i= 1:length(end_indices)
+    stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+    printpoints(stroke)
+    push!(strokes, stroke)
+    s = end_indices[i] + 1
+  end
+  sketch = stroke_constructsketch(strokes)
   info("Random sketch was obtained")
   savesketch(sketch, "original.png")
   z_vecs = get_strokelatentvecs(model, x)

@@ -15,17 +15,21 @@ function stroke_points_to_3d(sketch::Sketch)
   pen_state = zeros(1, size(sketch.points, 2))
   #set end points states to 1 discard initial 0
   pen_state[sketch.end_indices[2:end]] = 1
-  points = hcat([0; 0; 0], vcat(sketch.points, pen_state))
+  #points = hcat([0; 0; 0], vcat(sketch.points, pen_state))
+  points = vcat(sketch.points, pen_state)
   result = nothing
-  #compute (deta_x, delta_y)'s
-  for strokenum=1:(length(sketch.end_indices)-1)
-    start_ind = sketch.end_indices[strokenum]+1
+
+  for strokenum=1:(length(sketch.end_indices)-1) #POINTS HAS NEW POINT ADDED SOMETHING WRONG WITH INDICES
+    start_ind = sketch.end_indices[strokenum]+1 #ALSO HOW DO WE MAKE STARTING POINTS? HERE ARE INDEXING PROBLEMS
     end_ind = sketch.end_indices[strokenum+1]
-    points[1:2, start_ind+1:end_ind] -= points[1:2, start_ind:end_ind-1]
+    cur_points = points[ :, start_ind:end_ind] #get current stroke
+    cur_points = hcat([0; 0; 0], cur_points) #pad initial zeros
+    len = size(cur_points, 2)
+    cur_points[1:2, 2:len] -= cur_points[1:2, 1:len-1] #compute (deta_x, delta_y)'s of current stroke
     if result == nothing
-      result = points[:, start_ind+1:end_ind]
+      result = cur_points[:, 2:len]
     else
-      result = hcat(result, points[:, start_ind+1:end_ind])
+      result = hcat(result, cur_points[:, 2:len])
     end
   end
   #discard first entry
@@ -208,11 +212,11 @@ close()
 end
 export Sketch
 export RNNSketch
-export printcontents
+export printcontents, printpoints
 export addstroke!
 export plotsketch
 export savesketch
 export points_to_3d
 export to_big_points
-export clean_points, stroke_clean_points
+export clean_points, stroke_clean_points, stroke_points_to_3d
 end
