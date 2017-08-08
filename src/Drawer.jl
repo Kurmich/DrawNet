@@ -5,7 +5,7 @@ using DrawNet, Drawing
 using Distributions, PyPlot
 using Knet, ArgParse, JLD
 using IDM
-include("../models/RNN.jl")
+include("../rnns/RNN.jl")
 
 
 function constructsketch(points)
