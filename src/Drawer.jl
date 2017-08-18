@@ -2,7 +2,7 @@ include("DrawNet.jl")
 include("../utils/Drawing.jl")
 module Drawer
 using DrawNet, Drawing
-using Distributions, PyPlot
+using Distributions, PyPlot, SVR
 using Knet, ArgParse, JLD
 using IDM
 include("../rnns/RNN.jl")
@@ -146,6 +146,22 @@ function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, gre
   end
 end
 
+function classifystrokes(sketch)
+  label = "sampled sketch"
+  recognized = false
+  key_id = "sampled sketch"
+  for strokenum=1:(length(sketch.end_indices)-1)
+    start_ind = sketch.end_indices[strokenum]+1
+    end_ind = sketch.end_indices[strokenum+1]
+    points  = sketch.points[:, start_ind:end_ind]
+    idm = extractidm(points, [0 size(points, 2)])
+    ypred = SVR.predict(svmmodel, idm')
+    println(ypred)
+    stroke = Sketch(label, recognized, key_id, points,  [0 size(points, 2)])
+    savesketch(stroke, "stroke$(strokenum)-$(labels[Int(ypred[1])]).png")
+  end
+end
+
 function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
   max_seq_length = 50
   sampled_points = []
@@ -159,6 +175,7 @@ function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0,
   end
   #sampled_points = stroke_clean_points(sampled_points)
   sketch = stroke_constructsketch(sampled_points)
+  classifystrokes(sketch)
   if draw_mode
     savesketch(sketch, "sampled.png")
   end
@@ -197,10 +214,10 @@ end
 
 function rand_strokesketch(points3D)
   idx = rand(1:length(points3D))
-#  idx = 840
   #idx  = 2889
   #idx = 58
-#  idx = 1339
+  #idx = 2178
+#  idx = 2388
   info("Selected index is $(idx)")
   x_5D = to_big_points(points3D[idx]; max_len = 50)
   end_indices =  find(x_5D[4, :] .== 1)
@@ -232,6 +249,7 @@ function main(args=ARGS)
   s.description="Sketch sampler from model. (c) Kurmanbek Kaiyrbekov 2017."
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
+    ("--svmmodel"; arg_type=String; default="airplane.model"; help="Name of the pretrained svm model")
     ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
@@ -243,6 +261,8 @@ function main(args=ARGS)
   o = parse_args(args, s; as_symbols=true)
   w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
+  global svmmodel = SVR.loadmodel(o[:svmmodel])
+  global labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
@@ -263,6 +283,7 @@ function main(args=ARGS)
   z_vecs = get_strokelatentvecs(model, x)
   info("got latent vector(s)")
   stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy])
+  SVR.freemodel(svmmodel)
 end
 main()
 end
