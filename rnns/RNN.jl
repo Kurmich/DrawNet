@@ -1,5 +1,4 @@
 
-
 global const pretrnp = "../pretrained/"
 global const datap = "../data/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
@@ -104,7 +103,7 @@ end
 
 #MODELS
 
-function vanilla_lstm(param, state, input; dprob=0)
+function vanilla_lstm(param, state, input; dprob=0, exposed::Bool=false)
   weight, bias = param
   hidden, cell = state
   h = size(hidden, 2)
@@ -115,6 +114,9 @@ function vanilla_lstm(param, state, input; dprob=0)
   change = tanh(gates[:, 1+3h:4h])
   cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
   hidden = outgate .* tanh(cell)
+  if exposed #return all gates if needed for inspection
+    return (hidden, cell), (forget, ingate, outgate, change)
+  end
   return (hidden, cell)
 end
 
@@ -133,7 +135,7 @@ end
 
 
 
-function layernorm_lstm(param, state, input, alpha, beta; dprob=0)
+function layernorm_lstm(param, state, input, alpha, beta; dprob=0, exposed::Bool=false)
   weight, bias = param
   hidden, cell = state
   h = size(hidden, 2)
@@ -144,15 +146,18 @@ function layernorm_lstm(param, state, input, alpha, beta; dprob=0)
   change = tanh(normlayer(gates[:, 1+3h:4h], alpha[4], beta[4]))
   cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
   hidden = outgate .* tanh(normlayer(cell, alpha[5], beta[5]))
+  if exposed #return all gates if needed for inspection
+    return (hidden, cell), (forget, ingate, outgate, change)
+  end
   return (hidden, cell)
 end
 
 
-function lstm(param, state, input; alpha = nothing, beta = nothing, dprob=0)
+function lstm(param, state, input; alpha = nothing, beta = nothing, dprob=0, exposed::Bool=false)
   if alpha == nothing && beta == nothing
-    vanilla_lstm(param, state, input; dprob=dprob)
+    vanilla_lstm(param, state, input; dprob=dprob, exposed=exposed)
   elseif alpha != nothing && beta != nothing
-    layernorm_lstm(param, state, input, alpha, beta; dprob=dprob)
+    layernorm_lstm(param, state, input, alpha, beta; dprob=dprob, exposed=exposed)
   else
     error("alpha and beta must both be initialized or uninitialized")
   end
