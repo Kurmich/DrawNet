@@ -6,7 +6,7 @@ using Distributions, PyPlot, SVR
 using Knet, ArgParse, JLD
 using IDM
 include("../rnns/RNN.jl")
-
+include("Ferret.jl")
 
 function constructsketch(points)
   points2D = zeros(2, size(points, 2)-1)
@@ -57,7 +57,7 @@ function stroke_constructsketch(points)
 end
 
 function adjust_temp(pipdf, temp)
-  #=Assumption: pipdf is normalized=#
+  #=Assumption: pipdf is normalized?=#
   pipdf = log(pipdf)/temp
   pipdf = pipdf .- maximum(pipdf)
   pipdf = exp(pipdf)
@@ -95,11 +95,17 @@ function sample_gaussian_2d(mu1, mu2, s1, s2, rho; temp = 1.0, greedy::Bool = fa
   return x, y
 end
 
-function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = false)
+function sample(model, z; seqlen::Int = 45, temperature = 1.0, greedy_mode::Bool = false)
   #=Samples sequence from pretrained model=#
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
+  forgetcells = []
+  incells = []
+  outcells = []
+  changecells = []
+  hiddencells = []
+  cellcells = []
   if z == nothing
     z = randn(1, z_size)
   end
@@ -120,7 +126,13 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
     if hasembed
       input = input * model[:embed]
     end
-    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta)
+    state, gates = lstm(model[:decode], state, input; alpha=alpha, beta=beta, exposed=true)
+    push!(hiddencells,  Array(gates[1]))
+    push!(cellcells,  Array(tanh(gates[2])))
+    #push!(forgetcells,  Array(gates[1]))
+    #push!(incells,  Array(gates[2]))
+  #  push!(outcells,  Array(gates[3]))
+    #push!(changecells,  Array(gates[4]))
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M; samplemode=true) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
@@ -133,17 +145,33 @@ function sample(model, z; seqlen = 45, temperature = 1.0, greedy_mode::Bool = fa
     points[:, i] = cur_coords'
     prev_coords = atype(copy(cur_coords))
   end
-  return points, mixture_params
+  return points, mixture_params, (hiddencells, cellcells)
 end
 
 function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
-  max_seq_length = 50
+  max_seq_length = 60
   sampled_points, mixture_params = sample(model, z; seqlen=max_seq_length,temperature=temperature, greedy_mode=greedy_mode)
   sampled_points = clean_points(sampled_points)
   sketch = constructsketch(sampled_points)
   if draw_mode
     savesketch(sketch, "sampled.png")
   end
+end
+
+
+function strokes_as_sketch_objs(sketch)
+  label = "sampled stroke"
+  recognized = false
+  key_id = "sampled stroke"
+  sketch_objs = []
+  for strokenum=1:(length(sketch.end_indices)-1)
+    start_ind = sketch.end_indices[strokenum]+1
+    end_ind = sketch.end_indices[strokenum+1]
+    points  = sketch.points[:, start_ind:end_ind]
+    stroke = Sketch(label, recognized, key_id, points,  [0 size(points, 2)])
+    push!(sketch_objs, stroke)
+  end
+  return sketch_objs
 end
 
 function classifystrokes(sketch)
@@ -163,19 +191,29 @@ function classifystrokes(sketch)
 end
 
 function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
-  max_seq_length = 50
+  max_seq_length = 60
+  #gatenames = ("forget", "ingate", "outgate", "change")
+  gatenames = ("hidden", "cell")
   sampled_points = []
+  cells = []
   for i in 1:length(z_vecs)
     z = z_vecs[i]
     len = lens[i]
-    sampled_stroke_points, mixture_params = sample(model, z; seqlen=len + 5,temperature=temperature, greedy_mode=greedy_mode)
+    sampled_stroke_points, mixture_params, cell = sample(model, z; seqlen=len + 5,temperature=temperature, greedy_mode=greedy_mode)
     sampled_stroke_points = stroke_clean_points(sampled_stroke_points)
-    println(size(sampled_stroke_points))
+    push!(cells, cell)
+    #println(size(sampled_stroke_points))
     push!(sampled_points, sampled_stroke_points)
   end
   #sampled_points = stroke_clean_points(sampled_points)
   sketch = stroke_constructsketch(sampled_points)
-  classifystrokes(sketch)
+  strokes_objs = strokes_as_sketch_objs(sketch)
+  for i = 1:length(strokes_objs)
+    for j = 1:length(gatenames)
+      save_saturated_inds(cells[i][j], gatenames[j], strokes_objs[i]; mincutoff = -0.8, maxcutoff = 0.8)
+    end
+  end
+  #classifystrokes(sketch)
   if draw_mode
     savesketch(sketch, "sampled.png")
   end
@@ -211,15 +249,8 @@ function makesequence(points5D)
   return sequence
 end
 
-
-function rand_strokesketch(points3D)
-  idx = rand(1:length(points3D))
-  #idx  = 2889
-  #idx = 58
-  #idx = 2178
-#  idx = 2388
-  info("Selected index is $(idx)")
-  x_5D = to_big_points(points3D[idx]; max_len = 50)
+function tostrokesketch(points3D, idx)
+  x_5D = to_big_points(points3D[idx]; max_len = 60)
   end_indices =  find(x_5D[4, :] .== 1)
   push!(end_indices, size(x_5D, 2))
   strokecount = Int(sum(x_5D[4, :]))
@@ -234,6 +265,16 @@ function rand_strokesketch(points3D)
     stroke_start = end_indices[i] + 1
   end
   return strokeseq, sseqlens, x_5D
+end
+
+function rand_strokesketch(points3D)
+  idx = rand(1:length(points3D))
+  #idx  = 2889
+  #idx = 58
+  #idx = 2178
+#  idx = 2388
+  info("Selected index is $(idx)")
+  return tostrokesketch(points3D, idx)
 end
 
 function get_strokelatentvecs(model, strokeseq)
@@ -251,10 +292,11 @@ function main(args=ARGS)
   @add_arg_table s begin
     ("--svmmodel"; arg_type=String; default="airplane.model"; help="Name of the pretrained svm model")
     ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
-    ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
+    ("--dataset"; arg_type=String; default="r_full_simplified_airplane.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
     ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
+    ("--statmode"; action=:store_true; help="look at cells")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -267,6 +309,15 @@ function main(args=ARGS)
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   info("Train, Valid, Test data obtained")
+  if o[:statmode]
+    println("In stat mode!")
+    for i = 1:length(tstpoints3D)
+      x, lens, x_5D = tostrokesketch(tstpoints3D, i)
+      z_vecs = get_strokelatentvecs(model, x)
+      stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy])
+    end
+    return
+  end
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
   end_indices =  find(x_5D[4, :] .== 1)
   s = 1

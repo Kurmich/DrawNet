@@ -4,7 +4,7 @@ module DrawNet
 using Drawing, DataLoader, IDM
 using Knet, ArgParse, JLD, AutoGrad
 include("../rnns/RNN.jl")
-include("../models/FullStrokeRNN.jl")
+include("../models/StrokeRNN.jl")
 
 type KLparameters
   w::AbstractFloat
@@ -335,7 +335,7 @@ function main(args=ARGS)
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
     ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
-    ("--filename"; arg_type=String; default="full_simplified_airplane.ndjson"; help="Data file name")
+    ("--filename"; arg_type=String; default="r_full_simplified_face.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
@@ -379,15 +379,15 @@ function main(args=ARGS)
     trnpoints3D, vldpoints3D, tstpoints3D = get_splitteddata(sketchpoints3D, trnidx, vldidx, tstidx)
     trnsketches, vldsketches, tstsketches = get_splitteddata(sketches, trnidx, vldidx, tstidx)
     info("getting idm objects")
-    trnidm = get_idm_objects(trnsketches; imlen = o[:imlen], smooth = smooth)
-    vldidm = get_idm_objects(vldsketches; imlen = o[:imlen], smooth = smooth)
-    tstidm = get_idm_objects(tstsketches; imlen = o[:imlen], smooth = smooth)
+    #trnidm = get_idm_objects(trnsketches; imlen = o[:imlen], smooth = smooth)
+    #vldidm = get_idm_objects(vldsketches; imlen = o[:imlen], smooth = smooth)
+    #tstidm = get_idm_objects(tstsketches; imlen = o[:imlen], smooth = smooth)
     info("In nomralization phase")
     normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
     #normalizeidms!(trnidm, vldidm, tstidm)
     savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
     savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
-    savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
+    #savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
     #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
   else
     println("Loading data for training!")
