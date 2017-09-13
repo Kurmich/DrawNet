@@ -82,7 +82,7 @@ function stroke_clean_points(points; factor::Int=100)
   @assert(rows == 5)
   copy_points = nothing
   added_final = false
-  printpoints(points)
+  #printpoints(points)
   #iterate through all points
   for i=1:len
     finish_flag = Int(points[5, i])
@@ -105,7 +105,7 @@ function stroke_clean_points(points; factor::Int=100)
   if !added_final
     copy_points = hcat(copy_points, [0; 0; 0; 0; 1])
   end
-  printpoints(copy_points)
+  #printpoints(copy_points)
   return copy_points
 end
 
@@ -138,7 +138,7 @@ function clean_points(points; factor::Int=100)
   if !added_final
     copy_points = hcat(copy_points, [0; 0; 0; 0; 1])
   end
-  printpoints(copy_points)
+  #printpoints(copy_points)
   return copy_points
 end
 

@@ -12,6 +12,17 @@ function get_saturated_inds(seqcellvals; mincutoff = 0.1, maxcutoff = 0.9)
   return mininds, maxinds
 end
 
+
+function get_inds_in_range(seqcellvals; mincutoff = 0.1, maxcutoff = 0.9)
+  cells = trues(size(seqcellvals[1]))
+  for cellvals in seqcellvals
+    cells &= ((cellvals .>= mincutoff) & (cellvals .<= maxcutoff))
+  end
+  #get valid indices
+  inds = find(cells)
+  return inds
+end
+
 function save_cell_images(cellinds, cellname, saturtype, sketch)
   path = "$(cellpath)/$(cellname)/$(saturtype)/"
   if !ispath(path)

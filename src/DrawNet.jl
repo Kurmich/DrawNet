@@ -307,6 +307,57 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
+function classify(model, data, seqlen, ygold; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+  #model settings
+  maxlen = maximum(seqlen) #maximum length of the input sequence
+  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+  (batchsize, V) = size(data[1])
+  V = 5
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
+  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
+  h = encode(model, data, maxlen, batchsize; dprob=dprob)
+  #LOOK AT INDICES OF LOGP AND SIZE AND SUM
+  ypred = h*model[:pred][1] .+ model[:pred][2]
+  ynorm = logp(ypred, 2)
+  return -sum(ygold .* ynorm)/size(ygold, 1)
+end
+
+gradloss = grad(classify)
+function segment(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+  cur_wkl, step, cur_lr = 0, 0, 0
+  best_vld_cost = 100000
+  for e = 1:o[:epochs]
+    for i = 1:length(trndata)
+      for j = 1:length(trndata[i])
+        cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+        cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
+        x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
+        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], cur_wkl,; dprob=o[:dprob])
+        updatelr!(opts, cur_lr)
+        update!(model, grads, opts)
+        step += 1
+      end
+    end
+    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
+    #save the best model
+    vld_cost = vld_rec_loss + KL.w * vld_kl_loss
+    if vld_cost < best_vld_cost
+      best_vld_cost = vld_cost
+      arrmodel = convertmodel(model)
+      println("Epoch: $(e) saving best model to $(pretrnp)$(o[:bestmodel])")
+      save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
+    end
+    #report losses
+    @printf("vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
+    #save every o[:save_every] epochs
+    if e%o[:save_every] == 0
+      arrmodel = convertmodel(model)
+      save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
+    end
+    flush(STDOUT)
+  end
+end
+
 # initoptim creates optimization parameters for each numeric weight
 # array in the model.  This should work for a model consisting of any
 # combination of tuple/array/dict.
@@ -335,7 +386,7 @@ function main(args=ARGS)
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
     ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
-    ("--filename"; arg_type=String; default="r_full_simplified_face.ndjson"; help="Data file name")
+    ("--filename"; arg_type=String; default="airfacesquir.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
@@ -400,7 +451,7 @@ function main(args=ARGS)
   trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
   vld_batch_count = div(length(vldpoints3D), params.batchsize)
   params.numbatches = vld_batch_count
-  vlddata, vldseqlens= minibatch(vldpoints3D, vld_batch_count-1, params)
+  vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
 
   tst_batch_count = div(length(tstpoints3D), params.batchsize)
   println("Starting training")

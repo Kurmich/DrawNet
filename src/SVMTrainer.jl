@@ -6,15 +6,72 @@ using Drawing, DataLoader, IDM
 using JSON, SVR, ArgParse
 
 function update_annotations!(dict_data, annotations)
+  all_points, all_end_indices = getstrokes(dict_data["drawing"])
+  all_strokes = []
+  for strokenum=1:(length(all_end_indices)-1)
+    start_ind = all_end_indices[strokenum]+1
+    end_ind = all_end_indices[strokenum+1]
+    #get points of stroke
+    ps = all_points[:, start_ind:end_ind]
+    push!(all_strokes, ps)
+  end
+
+  #add labels for each stroke
   for label in keys(annotations)
     if haskey(dict_data, label)
       points, end_indices = getstrokes(dict_data[label])
-      push!(annotations[label], (points, end_indices))
+      #label each sketch
+      for strokenum=1:(length(end_indices)-1)
+        start_ind = end_indices[strokenum]+1
+        end_ind = end_indices[strokenum+1]
+        #get points of stroke
+        ps = points[:, start_ind:end_ind]
+        ends = [0, length(start_ind:end_ind)]
+        push!(annotations[label], (ps, ends))
+        #remove annotated stroke from pool of unannotated ones
+        for ind= 1:length(all_strokes)
+          if size(all_strokes[ind]) == size(ps) && isapprox(all_strokes[ind], ps)
+          #  println("removing")
+            deleteat!(all_strokes, ind)
+            break
+          end
+        end
+      end
+    #  push!(annotations[label], (points, end_indices))
+    end
+  end
+  label = "F"
+  if haskey(dict_data, "FP")
+    return
+  end
+  for ind = 1:length(all_strokes)
+    if length(all_strokes[ind]) > 1
+      push!(annotations[label], (all_strokes[ind], [0, size(all_strokes[ind], 2)]))
+    else
+      println("point")
     end
   end
 end
 
-function getdata(filename, labels)
+function add_details!(dict_data, annotations)
+  for label in keys(annotations)
+    if haskey(dict_data, label)
+      points, end_indices = getstrokes(dict_data[label])
+      #label each sketch
+      for strokenum=1:(length(end_indices)-1)
+        start_ind = end_indices[strokenum]+1
+        end_ind = end_indices[strokenum+1]
+        #get points of stroke
+        ps = points[:, start_ind:end_ind]
+        ends = [0, length(start_ind:end_ind)]
+        push!(annotations[label], (ps, ends))
+      end
+    #  push!(annotations[label], (points, end_indices))
+    end
+  end
+end
+
+function getannotateddata(filename, labels)
   annotations = Dict()
   for label in labels
     annotations[label] = []
@@ -27,6 +84,19 @@ function getdata(filename, labels)
      end
   end
   return annotations
+end
+
+function annotated2sketch_obj(annotations)
+  sketch_objects = Dict()
+  for label in keys(annotations)
+    if ! haskey(sketch_objects, label)
+      sketch_objects[label] = []
+    end
+    for (points, end_indices) in annotations[label]
+      push!(sketch_objects[label], Sketch(label, true, "keyid", points, end_indices))
+    end
+  end
+  return sketch_objects
 end
 
 function printdatastats(annotations)
@@ -50,8 +120,11 @@ end
 
 function getaccuracy(svmmodel, features, ygold)
   ypred = SVR.predict(svmmodel, features)
+  @assert(length(ypred) == length(ygold))
   count = 0.0
   for i=1:length(ypred)
+    #println(ypred[i])
+    #println(ygold[i])
     if ypred[i] == ygold[i]
       count += 1
     end
@@ -163,6 +236,10 @@ function trainsvm(trndata, tstdata, C, gamma, labels)
   SVR.freemodel(svmmodel)
 end
 
+function dict2list()
+
+end
+
 function main(args=ARGS)
   s = ArgParseSettings()
   s.description="SVM model trainer. (c) Kurmanbek Kaiyrbekov 2017."
@@ -170,20 +247,33 @@ function main(args=ARGS)
   @add_arg_table s begin
     ("--tstsize"; arg_type=Float64; default=0.2; help="Test set proportion.")
     ("--cv"; arg_type=Int; default=5; help="Cross validation fold parameter.")
-    ("--datapath"; arg_type=String; default="../annotateddata/"; help="Number of epochs per checkpoint creation.")
-    ("--filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Decoder: lstm, or ....")
+    ("--datapath"; arg_type=String; default="../annotateddata/"; help="Path to annotated data.")
+    ("--filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Filename of annotated data.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
   filename = string(o[:datapath], o[:filename])
-  labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-  annotations = getdata(filename, labels)
+  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+  labels = [ "L", "F", "FP"]
+  vldsize = 1/5
+  annotations = getannotateddata(filename, labels)
+  sketches = annotated2sketch_obj(annotations)
+  params = Parameters()
+  indices = randindinces(sketches)
+  trndata, tstdata = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
+  indices = randindinces(trndata)
+  trndata, vlddata = train_test_split(trndata, vldsize; indices = indices)
+  trndata = collect(values(trndata)) #as list ,> this is list of lists we need just list of sketches
+  vlddata = collect(values(vlddata))
+  tstdata = collect(values(tstdata)) #as list
+  sketchpoints3D, numbatches, sketches = preprocess(trndata, params)
+  #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations)
-  trnidms, tstidms = train_test_split(idms, o[:tstsize])
+  #=trnidms, tstidms = train_test_split(idms, o[:tstsize])
   C, gamma = get_cvd_params(trnidms, o[:cv], labels)
-  trainsvm(trnidms, tstidms, C, gamma, labels)
+  trainsvm(trnidms, tstidms, C, gamma, labels)=#
 end
 
 if VERSION >= v"0.5.0-dev+7720"

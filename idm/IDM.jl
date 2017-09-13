@@ -187,6 +187,16 @@ function transform(points; newmax=23,  newmin=2)
   else
     transpoints[2, :] = fill(newmin, size(transpoints[2, :]))
   end
+  #=MAKE SOME CHANGES HERE
+  if rangex != 0 && rangey != 0
+    if rangex > rangey
+      transpoints[2, :] *= rangey/rangex
+    elseif rangey > rangex
+      transpoints[1, :] *= rangex/rangey
+    end
+  end
+  =#
+
   return floor(transpoints)
 end
 
@@ -369,7 +379,34 @@ function get_idm_objects(sketches; imlen::Int = 12, smooth::Bool = true)
   return idmobjs
 end
 
+function extractidm(points, end_indices)
+  imsize = (24,24)
+  hsize = 3
+  sigma = 10
+  avgim = zeros((12,12))
+  angles = [0, 45, 90, 135]
+  points, end_indices = resample(points, end_indices)
+  points = normalize(points; d=2)
+  thetas, thetaidx = coords2angles(points, end_indices)
+  points = transform(points)
+  gf = Kernel.gaussian([sigma, sigma], [hsize, hsize])
+  endpnts = markendpoints(points, end_indices, imsize)
+  endpnts = imfilter(endpnts, gf)
+  endpnts = downsample(endpnts)
+  feat = reshape(endpnts, (1, length(endpnts)))
+  for angle in angles
+    pixelvals = get_pixelvals(thetas , angle)
+    image = points2im(points, end_indices, imsize, pixelvals, thetaidx)
+    image = imfilter(image, gf)
+    image = downsample(image)
+    feat = hcat(feat, reshape(image, (1, length(image))))
+  end
+  return feat
+end
+
+
 function extract(sketch)
+  return extractidm(sketch.points, sketch.end_indices)
   imsize = (24,24)
   hsize = 3
   sigma = 10
@@ -446,5 +483,5 @@ end
 
 export get_im_stds, get_idm_objects, get_idm_batch
 export IdmTuple, save_idmtuples, load_idmtuples
-export idm_indices_to_batch, saveidm
+export idm_indices_to_batch, saveidm, extractidm
 end

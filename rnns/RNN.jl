@@ -17,6 +17,24 @@ function reportmodel(model)
   @printf("Num of mixtures: %d, num of encoder units: %d , num of decoder units: %d, latent vector size: %d \n", M, e_H, d_H, z_size)
 end
 
+function initsegmenter( o )
+  #initial hidden and cell states of forward encoder
+  e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
+  V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
+  imlen = 0
+  model = Dict{Symbol, Any}()
+  info("Initializing encoder.")
+  initencoder(model, e_H, V, imlen)
+  model[:fw_shifts] = getshifts(e_H)
+  model[:bw_shifts] = getshifts(e_H)
+  return model
+end
+
+function initpredictor(model, e_H, numclasses)
+  #input dims = [batchsize, H]
+  model[:pred] = [initxav(e_H, numclasses), initzeros(1, numclasses)]
+end
+
 #=
 e_H -> size of hidden state of the encoder
 d_H -> size of hidden state of the decoder

@@ -127,25 +127,31 @@ function sample(model, z; seqlen::Int = 45, temperature = 1.0, greedy_mode::Bool
       input = input * model[:embed]
     end
     state, gates = lstm(model[:decode], state, input; alpha=alpha, beta=beta, exposed=true)
-    push!(hiddencells,  Array(gates[1]))
-    push!(cellcells,  Array(tanh(gates[2])))
-    #push!(forgetcells,  Array(gates[1]))
-    #push!(incells,  Array(gates[2]))
-  #  push!(outcells,  Array(gates[3]))
-    #push!(changecells,  Array(gates[4]))
+    #push!(hiddencells,  Array(state[1]))
+    #push!(cellcells,  Array(tanh(state[2])))
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M; samplemode=true) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
     idx_eos = get_pi_idx(rand(), qnorm; temp=temp, greedy=greedy)
     eos = [0 0 0]
     eos[idx_eos] = 1
+    if idx_eos != 3
+      push!(hiddencells,  Array(state[1]))
+      push!(cellcells,  Array(tanh(state[2])))
+    end
+    #=if idx_eos != 3
+      push!(forgetcells,  Array(gates[1]))
+      push!(incells,  Array(gates[2]))
+      push!(outcells,  Array(gates[3]))
+      push!(changecells,  Array(gates[4]))
+    end =#
     next_x, next_y = sample_gaussian_2d(mu_x[idx], mu_y[idx], sigma_x[idx], sigma_y[idx], rho[idx]; temp = sqrt(temp), greedy=greedy)
     push!(mixture_params, [ pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm ])
     cur_coords = [next_x next_y eos[1] eos[2] eos[3]]
     points[:, i] = cur_coords'
     prev_coords = atype(copy(cur_coords))
   end
-  return points, mixture_params, (hiddencells, cellcells)
+  return points, mixture_params, (hiddencells, cellcells)#(forgetcells, incells, outcells, changecells)
 end
 
 function decode(model, z; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
@@ -190,10 +196,14 @@ function classifystrokes(sketch)
   end
 end
 
-function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false)
+function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0, factor = 0.2, greedy_mode = false, strokes = nothing)
   max_seq_length = 60
-  #gatenames = ("forget", "ingate", "outgate", "change")
+#=  gatenames = ("forget", "ingate", "outgate", "change")
+  mins = (0.1, 0.1, 0.1, -0.8)
+  maxs = (0.9, 0.9, 0.9, 0.8)=#
   gatenames = ("hidden", "cell")
+  maxs = (0.9, 0.9)
+  mins = (-0.9, -0.9)
   sampled_points = []
   cells = []
   for i in 1:length(z_vecs)
@@ -206,11 +216,12 @@ function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0,
     push!(sampled_points, sampled_stroke_points)
   end
   #sampled_points = stroke_clean_points(sampled_points)
-  sketch = stroke_constructsketch(sampled_points)
+  sketch = stroke_constructsketch(strokes)
+  #sketch = stroke_constructsketch(sampled_points)
   strokes_objs = strokes_as_sketch_objs(sketch)
   for i = 1:length(strokes_objs)
     for j = 1:length(gatenames)
-      save_saturated_inds(cells[i][j], gatenames[j], strokes_objs[i]; mincutoff = -0.8, maxcutoff = 0.8)
+      save_saturated_inds(cells[i][j], gatenames[j], strokes_objs[i]; mincutoff = mins[j], maxcutoff = maxs[j])
     end
   end
   #classifystrokes(sketch)
@@ -309,15 +320,6 @@ function main(args=ARGS)
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   info("Train, Valid, Test data obtained")
-  if o[:statmode]
-    println("In stat mode!")
-    for i = 1:length(tstpoints3D)
-      x, lens, x_5D = tostrokesketch(tstpoints3D, i)
-      z_vecs = get_strokelatentvecs(model, x)
-      stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy])
-    end
-    return
-  end
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
   end_indices =  find(x_5D[4, :] .== 1)
   s = 1
@@ -328,12 +330,32 @@ function main(args=ARGS)
     push!(strokes, stroke)
     s = end_indices[i] + 1
   end
+
+  if o[:statmode]
+    println("In stat mode!")
+    for i = 1:length(tstpoints3D)
+      x, lens, x_5D = tostrokesketch(tstpoints3D, i)
+      end_indices =  find(x_5D[4, :] .== 1)
+      s = 1
+      strokes = []
+      for i= 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+        printpoints(stroke)
+        push!(strokes, stroke)
+        s = end_indices[i] + 1
+      end
+      z_vecs = get_strokelatentvecs(model, x)
+      stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
+    end
+    return
+  end
+
   sketch = stroke_constructsketch(strokes)
   info("Random sketch was obtained")
   savesketch(sketch, "original.png")
   z_vecs = get_strokelatentvecs(model, x)
   info("got latent vector(s)")
-  stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy])
+  stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
   SVR.freemodel(svmmodel)
 end
 main()

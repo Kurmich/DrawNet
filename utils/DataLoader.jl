@@ -14,7 +14,7 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=45, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=60, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
 
@@ -248,7 +248,7 @@ else
 end
 export getsketchpoints3D, get_sketch_objects
 export normalize!
-export getbatch
-export splitdata
+export getbatch, getstrokes
+export splitdata, preprocess
 export Parameters
 end
