@@ -1,10 +1,11 @@
 include("../utils/DataLoader.jl")
 include("../idm/IDM.jl")
 module DrawNet
-using Drawing, DataLoader, IDM
+using Drawing, DataLoader, IDM, JSON
 using Knet, ArgParse, JLD, AutoGrad
 include("../rnns/RNN.jl")
 include("../models/StrokeRNN.jl")
+include("DataManager.jl")
 
 type KLparameters
   w::AbstractFloat
@@ -310,45 +311,72 @@ end
 function classify(model, data, seqlen, ygold; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
-  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
   V = 5
-  d_H = size(model[:output][1], 1) #decoder hidden unit size
-  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
   h = encode(model, data, maxlen, batchsize; dprob=dprob)
   #LOOK AT INDICES OF LOGP AND SIZE AND SUM
   ypred = h*model[:pred][1] .+ model[:pred][2]
   ynorm = logp(ypred, 2)
+  if !istraining
+    return -sum(ygold .* ynorm)/size(ygold, 1), countcorrect(ypred, ygold)
+  end
   return -sum(ygold .* ynorm)/size(ygold, 1)
 end
 
+function countcorrect(ypred, ygold)
+	correct = sum(ygold .* (ypred .== maximum(ypred,2)))
+	return correct
+end
+
+function evalsegm(model, data, seqlens, ygold)
+  curloss, curright = 0.0, 0.0
+  loss, correct = 0.0, 0.0
+  ygold = map(a->convert(atype, a), ygold)
+  count = 0.0
+  for i = 1:length(data)
+    for j = 1:length(data[i])
+      curloss, curright = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i]; istraining=false)
+      loss += curloss
+      correct += curright
+      count += size(ygold[i], 1) #CHECK
+      #println(count)
+      #println(loss)
+    end
+  end
+  return loss/count, correct/count
+end
+
 gradloss = grad(classify)
-function segment(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+function segment(model, dataset, opts, o)
+  (trndata, trnseqlens, trngold) = dataset[:trn]
+  (vlddata, vldseqlens, vldgold) = dataset[:vld]
+  (tstdata, tstseqlens, tstgold) = dataset[:tst]
+
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
+  trngold = map(a->convert(atype, a), trngold)
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
       for j = 1:length(trndata[i])
         cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
         cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
         x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], cur_wkl,; dprob=o[:dprob])
+        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i]; dprob=o[:dprob])
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
         step += 1
       end
     end
-    (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
+    vld_loss, acc = evalsegm(model, vlddata, vldseqlens, vldgold)
     #save the best model
-    vld_cost = vld_rec_loss + KL.w * vld_kl_loss
-    if vld_cost < best_vld_cost
-      best_vld_cost = vld_cost
+    if vld_loss < best_vld_cost
+      best_vld_cost = vld_loss
       arrmodel = convertmodel(model)
       println("Epoch: $(e) saving best model to $(pretrnp)$(o[:bestmodel])")
       save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
     end
     #report losses
-    @printf("vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
+    @printf("vld data - epoch: %d step %d vld loss: %g vld acc: %g \n", e, step, vld_loss, acc)
     #save every o[:save_every] epochs
     if e%o[:save_every] == 0
       arrmodel = convertmodel(model)
@@ -356,6 +384,23 @@ function segment(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
     end
     flush(STDOUT)
   end
+end
+
+function makebatches(sketches, points3D, labels, params)
+  batch_count = div(length(points3D), params.batchsize)
+  params.numbatches = batch_count
+  data, seqlens = minibatch(points3D, batch_count-1, params)
+  ygolds = getlabels(sketches, labels, batch_count-1, params)
+  @assert(length(ygolds) == length(data))
+  return (data, seqlens, ygolds)
+end
+
+function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches,tstpoints3D, labels, params)
+  dataset = Dict()
+  dataset[:trn] = makebatches(trnsketches, trnpoints3D, labels, params)
+  dataset[:vld] = makebatches(vldsketches, vldpoints3D, labels, params)
+  dataset[:tst] = makebatches(tstsketches, tstpoints3D, labels, params)
+  return dataset
 end
 
 # initoptim creates optimization parameters for each numeric weight
@@ -384,9 +429,9 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=100; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
-    ("--filename"; arg_type=String; default="airfacesquir.ndjson"; help="Data file name")
+    ("--filename"; arg_type=String; default="pineapple.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
@@ -419,11 +464,40 @@ function main(args=ARGS)
   global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
   global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
   global const kl_tolerance = o[:kl_tolerance]
-  model = initmodel(o)
+  labels = [ "L", "F", "FP"]
+  o[:numclasses] = length(labels)
+  model = initsegmenter(o)
   params = Parameters()
+  params.batchsize = o[:batchsize]
+  params.min_seq_length = 1
   global optim = initoptim(model, o[:optimization])
+  vldsize = 1/5
   smooth = true
   if !o[:readydata]
+    filename = string(annotp, o[:filename])
+    #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+
+    annotations = getannotateddata(filename, labels)
+    sketches = annotated2sketch_obj(annotations)
+    for (key, value) in sketches
+        println(key, " ==> ", length(value))
+    end
+    indices = randindinces(sketches)
+    trndict, tstdict = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
+    indices = randindinces(trndict)
+    trndict, vlddict = train_test_split(trndict, vldsize; indices = indices)
+    trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
+    vlddata = dict2list(vlddict)
+    tstdata = dict2list(tstdict) #as list
+    @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
+    trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
+    vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
+    tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
+    @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
+    #savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
+    savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
+    #savedata("labels$(o[:imlen])$(o[:filename])", trnlabels, vldlabels, tstlabels)
+    #=
     sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
     trnidx, vldidx, tstidx = splitdata(sketchpoints3D)
     info("data was split")
@@ -439,28 +513,26 @@ function main(args=ARGS)
     savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
     savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
     #savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
-    #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)
+    #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)=#
   else
     println("Loading data for training!")
-    trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
+    trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:filename])")
+    trnlabels, vldlabels, tstlabels = savedata("$(datap)labels$(o[:imlen])$(o[:filename])")
   #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   end
   trnidm, vldidm, tstidm = nothing, nothing, nothing
-  trn_batch_count = div(length(trnpoints3D), params.batchsize)
-  params.numbatches = trn_batch_count
-  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
-  vld_batch_count = div(length(vldpoints3D), params.batchsize)
-  params.numbatches = vld_batch_count
-  vlddata, vldseqlens = minibatch(vldpoints3D, vld_batch_count-1, params)
-
-  tst_batch_count = div(length(tstpoints3D), params.batchsize)
+  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, labels, params)
+  @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(trndata))
+  @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(vlddata))
   println("Starting training")
-  reportmodel(model)
+  #reportmodel(model)
 #  trndata = paddall(trndata, trnidmtuples, o[:imlen])
   #vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
   #info("padding was complete")
+#  println("$(length(vldlabels)) $(length(vlddata))")
   flush(STDOUT)
-  train(model, trndata, trnseqlens, vlddata, vldseqlens, optim, o)
+  #@assert(length(vldlabels) == length(vlddata))
+  segment(model, dataset, optim, o)
 end
 #main()
 if VERSION >= v"0.5.0-dev+7720"

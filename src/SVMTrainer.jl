@@ -1,109 +1,11 @@
 include("../utils/DataLoader.jl")
 include("../idm/IDM.jl")
 
+
 module SVMTrainer
+include("DataManager.jl")
 using Drawing, DataLoader, IDM
 using JSON, SVR, ArgParse
-
-function update_annotations!(dict_data, annotations)
-  all_points, all_end_indices = getstrokes(dict_data["drawing"])
-  all_strokes = []
-  for strokenum=1:(length(all_end_indices)-1)
-    start_ind = all_end_indices[strokenum]+1
-    end_ind = all_end_indices[strokenum+1]
-    #get points of stroke
-    ps = all_points[:, start_ind:end_ind]
-    push!(all_strokes, ps)
-  end
-
-  #add labels for each stroke
-  for label in keys(annotations)
-    if haskey(dict_data, label)
-      points, end_indices = getstrokes(dict_data[label])
-      #label each sketch
-      for strokenum=1:(length(end_indices)-1)
-        start_ind = end_indices[strokenum]+1
-        end_ind = end_indices[strokenum+1]
-        #get points of stroke
-        ps = points[:, start_ind:end_ind]
-        ends = [0, length(start_ind:end_ind)]
-        push!(annotations[label], (ps, ends))
-        #remove annotated stroke from pool of unannotated ones
-        for ind= 1:length(all_strokes)
-          if size(all_strokes[ind]) == size(ps) && isapprox(all_strokes[ind], ps)
-          #  println("removing")
-            deleteat!(all_strokes, ind)
-            break
-          end
-        end
-      end
-    #  push!(annotations[label], (points, end_indices))
-    end
-  end
-  label = "F"
-  if haskey(dict_data, "FP")
-    return
-  end
-  for ind = 1:length(all_strokes)
-    if length(all_strokes[ind]) > 1
-      push!(annotations[label], (all_strokes[ind], [0, size(all_strokes[ind], 2)]))
-    else
-      println("point")
-    end
-  end
-end
-
-function add_details!(dict_data, annotations)
-  for label in keys(annotations)
-    if haskey(dict_data, label)
-      points, end_indices = getstrokes(dict_data[label])
-      #label each sketch
-      for strokenum=1:(length(end_indices)-1)
-        start_ind = end_indices[strokenum]+1
-        end_ind = end_indices[strokenum+1]
-        #get points of stroke
-        ps = points[:, start_ind:end_ind]
-        ends = [0, length(start_ind:end_ind)]
-        push!(annotations[label], (ps, ends))
-      end
-    #  push!(annotations[label], (points, end_indices))
-    end
-  end
-end
-
-function getannotateddata(filename, labels)
-  annotations = Dict()
-  for label in labels
-    annotations[label] = []
-  end
-  open(filename, "r") do f
-     while !eof(f)
-       text_data = readline(f)  # file information to string
-       dict_data = JSON.parse(text_data)  # parse and transform data
-       update_annotations!(dict_data, annotations)
-     end
-  end
-  return annotations
-end
-
-function annotated2sketch_obj(annotations)
-  sketch_objects = Dict()
-  for label in keys(annotations)
-    if ! haskey(sketch_objects, label)
-      sketch_objects[label] = []
-    end
-    for (points, end_indices) in annotations[label]
-      push!(sketch_objects[label], Sketch(label, true, "keyid", points, end_indices))
-    end
-  end
-  return sketch_objects
-end
-
-function printdatastats(annotations)
-  for label in keys(annotations)
-    println("$(label) $(length(annotations[label]))")
-  end
-end
 
 function getfeats(annotations)
   info("Extracting idm features")
@@ -117,6 +19,7 @@ function getfeats(annotations)
   end
   return features
 end
+
 
 function getaccuracy(svmmodel, features, ygold)
   ypred = SVR.predict(svmmodel, features)
@@ -132,28 +35,6 @@ function getaccuracy(svmmodel, features, ygold)
   return count/length(ypred)
 end
 
-function randindinces(annotations)
-  indices = Dict()
-  for label in keys(annotations)
-    indices[label] = randperm(length(annotations[label]))
-  end
-  return indices
-end
-
-function train_test_split(data, tstsize; indices = nothing)
-  @assert(tstsize > 0 && tstsize < 1, "tstsize should be in range 0 < tstsize < 1")
-  indices = (indices == nothing) ? randindinces(data) : indices
-  trndata = Dict()
-  tstdata = Dict()
-  for label in keys(data)
-    idx = indices[label]
-    curdata = data[label]
-    up = Int(floor(tstsize*length(idx)))
-    tstdata[label] = curdata[idx[1:up]]
-    trndata[label] = curdata[idx[up+1:length(idx)]]
-  end
-  return trndata, tstdata
-end
 
 function shift_indices!(indices, vldsize)
   for label in keys(indices)
@@ -162,6 +43,7 @@ function shift_indices!(indices, vldsize)
     indices[label] = circshift(idx, up)
   end
 end
+
 
 function get_feats_and_classes(data, labels)
   feats = nothing
@@ -181,6 +63,7 @@ function get_feats_and_classes(data, labels)
   classes = convert(Array{Float64}, classes)
   return feats', classes
 end
+
 function crossvalidate(data, cv, labels, C, gamma)
   @assert(cv > 1, "Cross validation parameter should be greater than 1")
   #info("Cross validating for C = $(C) and gamma = $(gamma)")
@@ -236,9 +119,6 @@ function trainsvm(trndata, tstdata, C, gamma, labels)
   SVR.freemodel(svmmodel)
 end
 
-function dict2list()
-
-end
 
 function main(args=ARGS)
   s = ArgParseSettings()
@@ -261,12 +141,12 @@ function main(args=ARGS)
   sketches = annotated2sketch_obj(annotations)
   params = Parameters()
   indices = randindinces(sketches)
-  trndata, tstdata = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
-  indices = randindinces(trndata)
-  trndata, vlddata = train_test_split(trndata, vldsize; indices = indices)
-  trndata = collect(values(trndata)) #as list ,> this is list of lists we need just list of sketches
-  vlddata = collect(values(vlddata))
-  tstdata = collect(values(tstdata)) #as list
+  trndict, tstdict = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
+  indices = randindinces(trndict)
+  trndict, vlddict = train_test_split(trndict, vldsize; indices = indices)
+  trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
+  vlddata = dict2list(vlddict)
+  tstdata = dict2list(tstdict) #as list
   sketchpoints3D, numbatches, sketches = preprocess(trndata, params)
   #println(numbatches)
   printdatastats(annotations)
