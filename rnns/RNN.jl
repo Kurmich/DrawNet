@@ -1,6 +1,7 @@
 
 global const pretrnp = "../pretrained/"
 global const datap = "../data/"
+global const annotp = "../annotateddata/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
@@ -19,20 +20,27 @@ end
 
 function initsegmenter( o )
   #initial hidden and cell states of forward encoder
-  e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
+  e_H, numclasses = o[:enc_rnn_size], o[:numclasses]
   V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
   imlen = 0
   model = Dict{Symbol, Any}()
   info("Initializing encoder.")
   initencoder(model, e_H, V, imlen)
+  initpredictor(model, e_H, numclasses)
+  initattention(model, e_H)
   model[:fw_shifts] = getshifts(e_H)
   model[:bw_shifts] = getshifts(e_H)
   return model
 end
 
+function initattention(model, e_H)
+  model[:fwattn] = [initxav(e_H, 1), initzeros(1, 1)]
+  model[:bwattn] = [initxav(e_H, 1), initzeros(1, 1)]
+end
+
 function initpredictor(model, e_H, numclasses)
   #input dims = [batchsize, H]
-  model[:pred] = [initxav(e_H, numclasses), initzeros(1, numclasses)]
+  model[:pred] = [initxav(2e_H, numclasses), initzeros(1, numclasses)]
 end
 
 #=

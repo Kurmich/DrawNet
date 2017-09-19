@@ -54,10 +54,20 @@ function initstate(batchsize, state0)
     return (h,c)
 end
 
-function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
+function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool = false, attn::Bool = false)
   #Initialize states for forward-backward rnns
+  maxlen = maximum(seqlens) #maximum length of the input sequence
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
+  fwa, bwa = nothing, nothing
+  if meanrep
+    fwmean = atype(zeros(size(statefw[1])))
+    bwmean = atype(zeros(size(statebw[1])))
+  end
+  if attn
+    fwm = []
+    bwm = []
+  end
   #forward encoder
   w = AutoGrad.getval(model)
   hasembed, hasshift = haskey(w, :fw_embed), haskey(w, :fw_shifts)
@@ -65,6 +75,13 @@ function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   for i = 1:maxlen
     input = hasembed ? data[i] * model[:fw_embed] : data[i]
     statefw = lstm(model[:fw_encode], statefw, input; alpha=alpha, beta=beta, dprob=dprob)
+    #fwmean += statefw[1]
+    push!(fwm, statefw[1])
+    if i == 1
+      fwa = statefw[1]*model[:fwattn][1] .+ model[:fwattn][2]
+    else
+      fwa = hcat(fwa, statefw[1]*model[:fwattn][1] .+ model[:fwattn][2])
+    end
   end
   #backward encoder
   hasembed, hasshift = haskey(w, :bw_embed), haskey(w, :bw_shifts)
@@ -72,6 +89,25 @@ function encode(model, data, maxlen::Int, batchsize::Int; dprob = 0)
   for i = maxlen:-1:1
     input = hasembed ? data[i]*model[:bw_embed] : data[i]
     statebw = lstm(model[:bw_encode], statebw, input; alpha=alpha, beta=beta, dprob=dprob)
+    #bwmean += statebw[1]
+    push!(bwm, statebw[1])
+    if i == maxlen
+      bwa = statebw[1]*model[:bwattn][1] .+ model[:bwattn][2]
+    else
+      bwa = hcat(bwa, statebw[1]*model[:bwattn][1] .+ model[:bwattn][2])
+    end
+  end
+  bwa = softmax(bwa, 2)
+  fwa = softmax(fwa, 2)
+  #println(size(fwm[1]), size(bwa))
+  for i = 1:maxlen
+    fwmean += (fwm[i] .* fwa[:, i])
+    bwmean += (bwm[i] .* bwa[:, i])
+  end
+  if meanrep
+  #  fwmean = fwmean ./ maxlen
+  #  bwmean = bwmean ./ maxlen
+    return hcat(fwmean, bwmean)
   end
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
 end
@@ -308,50 +344,67 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
-function classify(model, data, seqlen, ygold; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+function classify(model, data, seqlen, ygold; epsilon = 1e-6, istraining::Bool = true, dprob = 0, weights = nothing)
   #model settings
-  maxlen = maximum(seqlen) #maximum length of the input sequence
-  (batchsize, V) = size(data[1])
-  V = 5
-  h = encode(model, data, maxlen, batchsize; dprob=dprob)
-  #LOOK AT INDICES OF LOGP AND SIZE AND SUM
-  ypred = h*model[:pred][1] .+ model[:pred][2]
+  ypred = pred(model, data, seqlen; epsilon=epsilon, dprob = dprob)
   ynorm = logp(ypred, 2)
   if !istraining
-    return -sum(ygold .* ynorm)/size(ygold, 1), countcorrect(ypred, ygold)
+    return -sum(ygold .* ynorm)/size(ygold, 1), ypred
   end
-  return -sum(ygold .* ynorm)/size(ygold, 1)
+  if weights == nothing
+    return -sum(ygold .* ynorm)/size(ygold, 1)
+  end
+  return -sum(ygold .* ynorm .* weights)/size(ygold, 1)
 end
 
-function countcorrect(ypred, ygold)
-	correct = sum(ygold .* (ypred .== maximum(ypred,2)))
-	return correct
+function pred(model, data, seqlens; epsilon = 1e-6, dprob = 0)
+  (batchsize, V) = size(data[1])
+  V = 5
+  h = encode(model, data, seqlens, batchsize; dprob=dprob, meanrep = true, attn=true)
+  #LOOK AT INDICES OF LOGP AND SIZE AND SUM
+  ypred = h*model[:pred][1] .+ model[:pred][2]
+end
+function countcorrect(ypred, ygold, correct_count, instance_count)
+  #=size(ygold) = (batchsize, numclasses)=#
+  correct_batch = sum(ygold .* (ypred .== maximum(ypred, 2)), 1) #dims = 1, numclasses
+  instance_batch = sum(ygold, 1) #dims 1, batchsize
+  #println(size(correct_batch), size(correct_count))
+  correct_count += correct_batch
+  instance_count += instance_batch
+  return correct_count, instance_count
+	#=correct = sum(ygold .* (ypred .== maximum(ypred, 2)))
+	return correct=#
 end
 
 function evalsegm(model, data, seqlens, ygold)
+  correct_count = zeros(1, size(ygold[1], 2))
+  instance_count = zeros(1, size(ygold[1], 2))
   curloss, curright = 0.0, 0.0
   loss, correct = 0.0, 0.0
   ygold = map(a->convert(atype, a), ygold)
   count = 0.0
   for i = 1:length(data)
     for j = 1:length(data[i])
-      curloss, curright = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i]; istraining=false)
+      curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i]; istraining=false)
+      correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
       loss += curloss
-      correct += curright
       count += size(ygold[i], 1) #CHECK
-      #println(count)
-      #println(loss)
     end
   end
-  return loss/count, correct/count
+  return loss/count, correct_count, instance_count
 end
 
 gradloss = grad(classify)
 function segment(model, dataset, opts, o)
-  (trndata, trnseqlens, trngold) = dataset[:trn]
-  (vlddata, vldseqlens, vldgold) = dataset[:vld]
-  (tstdata, tstseqlens, tstgold) = dataset[:tst]
-
+  (trndata, trnseqlens, trngold, trnstats)  = dataset[:trn]
+  (vlddata, vldseqlens, vldgold, vldstats) = dataset[:vld]
+  (tstdata, tstseqlens, tstgold, tststats) = dataset[:tst]
+  println(trnstats)
+  println(-trnstats/maximum(trnstats))
+  weights = softmax(-trnstats/maximum(trnstats), 2)
+  println(weights)
+  flush(STDOUT)
+  weights = atype(weights)
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   trngold = map(a->convert(atype, a), trngold)
@@ -361,13 +414,13 @@ function segment(model, dataset, opts, o)
         cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
         cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
         x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i]; dprob=o[:dprob])
+        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i]; dprob=o[:dprob], weights=weights)
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
         step += 1
       end
     end
-    vld_loss, acc = evalsegm(model, vlddata, vldseqlens, vldgold)
+    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold)
     #save the best model
     if vld_loss < best_vld_cost
       best_vld_cost = vld_loss
@@ -376,7 +429,10 @@ function segment(model, dataset, opts, o)
       save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
     end
     #report losses
-    @printf("vld data - epoch: %d step %d vld loss: %g vld acc: %g \n", e, step, vld_loss, acc)
+    @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
+    for c = 1:length(correct_count)
+      @printf("vld data - epoch: %d class %d instances: %d acc: %g \n", e, c, instance_count[c], correct_count[c]/instance_count[c] )
+    end
     #save every o[:save_every] epochs
     if e%o[:save_every] == 0
       arrmodel = convertmodel(model)
@@ -387,12 +443,12 @@ function segment(model, dataset, opts, o)
 end
 
 function makebatches(sketches, points3D, labels, params)
-  batch_count = div(length(points3D), params.batchsize)
+  batch_count = Int(ceil(length(points3D)/params.batchsize))
   params.numbatches = batch_count
-  data, seqlens = minibatch(points3D, batch_count-1, params)
-  ygolds = getlabels(sketches, labels, batch_count-1, params)
+  data, seqlens = minibatch(points3D, batch_count, params)
+  ygolds, instance_per_label = getlabels(sketches, labels, batch_count, params)
   @assert(length(ygolds) == length(data))
-  return (data, seqlens, ygolds)
+  return (data, seqlens, ygolds, instance_per_label)
 end
 
 function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches,tstpoints3D, labels, params)
@@ -449,9 +505,9 @@ function main(args=ARGS)
     ("--kl_tolerance"; arg_type=Float64; default=0.05; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
-    ("--lr"; arg_type=Float64; default=0.0001; help="Learning rate")
+    ("--lr"; arg_type=Float64; default=0.00006; help="Learning rate")
     ("--minlr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
-    ("--lr_decay_rate"; arg_type=Float64; default=0.99999; help="Minimum learning rate.")
+    ("--lr_decay_rate"; arg_type=Float64; default=0.9999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
@@ -482,10 +538,12 @@ function main(args=ARGS)
     for (key, value) in sketches
         println(key, " ==> ", length(value))
     end
-    indices = randindinces(sketches)
-    trndict, tstdict = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
-    indices = randindinces(trndict)
-    trndict, vlddict = train_test_split(trndict, vldsize; indices = indices)
+    trn_tst_indices = randindinces(sketches)
+    save("trn_tst_indices.jld", "indices" ,trn_tst_indices)
+    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices) #get even split as dictionary
+    trn_vld_indices = randindinces(trndict)
+    save("trn_vld_indices.jld", "indices" ,trn_vld_indices)
+    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
     trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
     vlddata = dict2list(vlddict)
     tstdata = dict2list(tstdict) #as list
@@ -515,9 +573,27 @@ function main(args=ARGS)
     #savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
     #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)=#
   else
+    filename = string(annotp, o[:filename])
+    #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+
+    annotations = getannotateddata(filename, labels)
+    sketches = annotated2sketch_obj(annotations)
+    for (key, value) in sketches
+        println(key, " ==> ", length(value))
+    end
     println("Loading data for training!")
-    trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:filename])")
-    trnlabels, vldlabels, tstlabels = savedata("$(datap)labels$(o[:imlen])$(o[:filename])")
+    trn_tst_indices = load("trn_tst_indices.jld")["indices"]
+    trn_vld_indices = load("trn_vld_indices.jld")["indices"]
+    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices)
+    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
+    trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
+    vlddata = dict2list(vlddict)
+    tstdata = dict2list(tstdict) #as list
+    @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
+    trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
+    vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
+    tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
+    @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
   #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   end
   trnidm, vldidm, tstidm = nothing, nothing, nothing

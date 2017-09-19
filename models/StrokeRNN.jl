@@ -106,6 +106,24 @@ function evaluatemodel(model, data, seqlens, wkl)
 end
 
 
+function getlabels(sketches, labels, numbatches, params)
+  numlabels = length(labels)
+  onehotvecs = []
+  for idx=0:(numbatches-1)
+    ygolds = zeros(params.batchsize, labels)
+    start_ind = idx * params.batchsize
+    indices = (start_ind + 1):(start_ind + params.batchsize)
+    batch = sketches[indices]
+    for i=1:length(batch)
+      sketch = batch[i]
+      class = findfirst(labels, sketch.label)
+      ygolds[i, class] = 1
+    end
+    push!(onehotvecs, ygolds)
+  end
+  return onehotvecs
+end
+
 function minibatch(sketchpoints3D, numbatches, params)
   #=stroke level minibatching=#
   info("Stroke minibatching")

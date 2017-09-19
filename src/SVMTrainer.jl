@@ -14,7 +14,11 @@ function getfeats(annotations)
   #  println("$(label) $(length(annotations[label]))")
     features[label] = []
     for (points, end_indices) in annotations[label]
-      push!(features[label], extractidm(points, end_indices))
+      mid = sum(points, 2)/256 ##ADDING SPATIAL INFO
+      idm = extractidm(points, end_indices)
+      #println(size(idm), size(mid))
+      idm = hcat(idm, mid')
+      push!(features[label], idm)
     end
   end
   return features
@@ -24,15 +28,20 @@ end
 function getaccuracy(svmmodel, features, ygold)
   ypred = SVR.predict(svmmodel, features)
   @assert(length(ypred) == length(ygold))
+  correct_count = zeros(1, length(unique(ygold)))
+  instance_count = zeros(1, length(unique(ygold)))
   count = 0.0
   for i=1:length(ypred)
     #println(ypred[i])
     #println(ygold[i])
+    class = Int(ygold[i])
+    instance_count[class] += 1
     if ypred[i] == ygold[i]
+      correct_count[class] += 1
       count += 1
     end
   end
-  return count/length(ypred)
+  return count/length(ypred), correct_count, instance_count
 end
 
 
@@ -76,7 +85,8 @@ function crossvalidate(data, cv, labels, C, gamma)
     trnfeats, trnlabels = get_feats_and_classes(trndata, labels)
     vldfeats, vldlabels = get_feats_and_classes(vlddata, labels)
     svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
-    acc = getaccuracy(svmmodel, vldfeats, vldlabels)
+    acc, correct_count, instance_count = getaccuracy(svmmodel, vldfeats, vldlabels)
+    println(correct_count ./ instance_count)
     push!(scores, acc)
     SVR.freemodel(svmmodel)
   end
@@ -103,6 +113,7 @@ function get_cvd_params(data, cv, labels)
       end
       println(scores)
       @printf("C: %g gamma: %g avgscore: %g \n \n", C, gamma,  avgscore)
+      flush(STDOUT)
     end
   end
   @printf("best C: %g best gamma: %g best avg score: %g \n", bestC, bestGamma,  bestscore)
@@ -113,7 +124,7 @@ function trainsvm(trndata, tstdata, C, gamma, labels)
   trnfeats, trnlabels = get_feats_and_classes(trndata, labels)
   tstfeats, tstlabels = get_feats_and_classes(tstdata, labels)
   svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
-  acc = getaccuracy(svmmodel, tstfeats, tstlabels)
+  acc, correct_count, instance_count = getaccuracy(svmmodel, tstfeats, tstlabels)
   @printf("best C: %g best gamma: %g tst accuracy: %g \n", C, gamma, acc)
   SVR.savemodel(svmmodel, "airplane.model")
   SVR.freemodel(svmmodel)
@@ -138,7 +149,7 @@ function main(args=ARGS)
   labels = [ "L", "F", "FP"]
   vldsize = 1/5
   annotations = getannotateddata(filename, labels)
-  sketches = annotated2sketch_obj(annotations)
+  #=sketches = annotated2sketch_obj(annotations)
   params = Parameters()
   indices = randindinces(sketches)
   trndict, tstdict = train_test_split(sketches, vldsize; indices = indices) #get even split as dictionary
@@ -147,13 +158,15 @@ function main(args=ARGS)
   trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
   vlddata = dict2list(vlddict)
   tstdata = dict2list(tstdict) #as list
-  sketchpoints3D, numbatches, sketches = preprocess(trndata, params)
+  sketchpoints3D, numbatches, sketches = preprocess(trndata, params) =#
+
   #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations)
-  #=trnidms, tstidms = train_test_split(idms, o[:tstsize])
+  trn_tst_indices = load("trn_tst_indices.jld")["indices"]
+  trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
   C, gamma = get_cvd_params(trnidms, o[:cv], labels)
-  trainsvm(trnidms, tstidms, C, gamma, labels)=#
+  trainsvm(trnidms, tstidms, C, gamma, labels)
 end
 
 if VERSION >= v"0.5.0-dev+7720"
