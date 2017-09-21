@@ -210,11 +210,42 @@ function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1
   savefig(filename, dpi=mydpi)
 close()
 end
+
+function saveslabeled(sketch::Sketch, strokeclasses, filename::String="sketch.png"; completness=1, mydpi=100, imsize=256, scaled = false)
+  #Prints contents of current sketch
+  colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan"]
+  fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
+  strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
+  #iterate through strokes
+  for strokenum=1:(length(sketch.end_indices)-1)
+    start_ind = sketch.end_indices[strokenum]+1
+    end_ind = sketch.end_indices[strokenum+1]
+    #get points of stroke
+    x = sketch.points[1, start_ind:end_ind]
+    y = sketch.points[2, start_ind:end_ind]
+    g = Int(strokeclasses[strokenum])
+    println(g)
+    c = colors[g]
+    println(c)
+    if strokenum <= strokelimit
+      plot(x, -y, linewidth = 1, color = c)
+    else
+      plot(x, -y, linewidth = 1, color = colors[strokeclasses[strokenum]])
+    end
+    if scaled
+      subplots_adjust(bottom=0.,left=0.,right=1.,top=1.)
+    end
+    axis("off")
+  end
+  savefig(filename, dpi=mydpi)
+close()
+end
+
 export Sketch
 export RNNSketch
 export printcontents, printpoints
 export addstroke!
-export plotsketch
+export plotsketch, saveslabeled
 export savesketch
 export points_to_3d
 export to_big_points

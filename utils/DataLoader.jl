@@ -143,9 +143,9 @@ end
 
 function padbatch(batch, params::Parameters)
   max_len = params.max_seq_length
-  result = zeros(5, max_len + 1, params.batchsize)
-  @assert(length(batch)==params.batchsize)
-  for i=1:params.batchsize
+  result = zeros(5, max_len + 1, length(batch))
+  #@assert(length(batch)==params.batchsize)
+  for i=1:length(batch)
     len = size(batch[i], 2)
     @assert(len <= max_len)
     result[:, 2:max_len+1, i] = to_big_points(batch[i]; max_len = max_len)
@@ -180,7 +180,8 @@ function getbatch(sketchpoints3D, idx, params::Parameters)
   @assert(idx >= 0, "index must be nonnegative")
   @assert(idx < params.numbatches, "index must be less number of batches")
   start_ind = idx * params.batchsize
-  indices = (start_ind + 1):(start_ind + params.batchsize)
+  end_ind = min((start_ind + params.batchsize), length(sketchpoints3D))
+  indices = (start_ind + 1) : end_ind
   return indices_to_batch(sketchpoints3D, indices, params)
 end
 
