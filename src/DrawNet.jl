@@ -60,7 +60,7 @@ function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool =
   statefw = initstate(batchsize, model[:fw_state0])
   statebw = initstate(batchsize, model[:bw_state0])
   fwa, bwa = nothing, nothing
-  if meanrep
+  if meanrep || attn
     fwmean = atype(zeros(size(statefw[1])))
     bwmean = atype(zeros(size(statebw[1])))
   end
@@ -75,12 +75,15 @@ function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool =
   for i = 1:maxlen
     input = hasembed ? data[i] * model[:fw_embed] : data[i]
     statefw = lstm(model[:fw_encode], statefw, input; alpha=alpha, beta=beta, dprob=dprob)
-    #fwmean += statefw[1]
-    push!(fwm, statefw[1])
-    if i == 1
-      fwa = statefw[1]*model[:fwattn][1] .+ model[:fwattn][2]
-    else
-      fwa = hcat(fwa, statefw[1]*model[:fwattn][1] .+ model[:fwattn][2])
+    if meanrep
+      fwmean += statefw[1]
+    elseif attn
+      push!(fwm, statefw[1])
+      if i == 1
+        fwa = statefw[1]*model[:fwattn][1] .+ model[:fwattn][2]
+      else
+        fwa = hcat(fwa, statefw[1]*model[:fwattn][1] .+ model[:fwattn][2])
+      end
     end
   end
   #backward encoder
@@ -89,24 +92,29 @@ function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool =
   for i = maxlen:-1:1
     input = hasembed ? data[i]*model[:bw_embed] : data[i]
     statebw = lstm(model[:bw_encode], statebw, input; alpha=alpha, beta=beta, dprob=dprob)
-    #bwmean += statebw[1]
-    push!(bwm, statebw[1])
-    if i == maxlen
-      bwa = statebw[1]*model[:bwattn][1] .+ model[:bwattn][2]
-    else
-      bwa = hcat(bwa, statebw[1]*model[:bwattn][1] .+ model[:bwattn][2])
+    if meanrep
+      bwmean += statebw[1]
+    elseif attn
+      push!(bwm, statebw[1])
+      if i == maxlen
+        bwa = statebw[1]*model[:bwattn][1] .+ model[:bwattn][2]
+      else
+        bwa = hcat(bwa, statebw[1]*model[:bwattn][1] .+ model[:bwattn][2])
+      end
     end
   end
-  bwa = softmax(bwa, 2)
-  fwa = softmax(fwa, 2)
-  #println(size(fwm[1]), size(bwa))
-  for i = 1:maxlen
-    fwmean += (fwm[i] .* fwa[:, i])
-    bwmean += (bwm[i] .* bwa[:, i])
-  end
+
   if meanrep
-  #  fwmean = fwmean ./ maxlen
-  #  bwmean = bwmean ./ maxlen
+    fwmean = fwmean ./ maxlen
+    bwmean = bwmean ./ maxlen
+    return hcat(fwmean, bwmean)
+  elseif attn
+    bwa = softmax(bwa, 2)
+    fwa = softmax(fwa, 2)
+    for i = 1:maxlen
+      fwmean += (fwm[i] .* fwa[:, i])
+      bwmean += (bwm[i] .* bwa[:, i])
+    end
     return hcat(fwmean, bwmean)
   end
   return hcat(statefw[1], statebw[1]) #(h_fw, c_fw) = statefw, (h_bw, c_bw) = statebw
@@ -344,23 +352,24 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
-function classify(model, data, seqlen, ygold; epsilon = 1e-6, istraining::Bool = true, dprob = 0, weights = nothing)
+function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing)
   #model settings
-  ypred = pred(model, data, seqlen; epsilon=epsilon, dprob = dprob)
-  ynorm = logp(ypred, 2)
   if !istraining
+    ypred = pred(model, data, seqlen; dprob=0, meanrep=o[:meanrep], attn=o[:attn])
+    ynorm = logp(ypred, 2)
     return -sum(ygold .* ynorm)/size(ygold, 1), ypred
   end
+  ypred = pred(model, data, seqlen; dprob=o[:dprob], meanrep=o[:meanrep], attn=o[:attn])
+  ynorm = logp(ypred, 2)
   if weights == nothing
     return -sum(ygold .* ynorm)/size(ygold, 1)
   end
   return -sum(ygold .* ynorm .* weights)/size(ygold, 1)
 end
 
-function pred(model, data, seqlens; epsilon = 1e-6, dprob = 0)
+function pred(model, data, seqlens; dprob = 0, meanrep::Bool = false, attn::Bool = false )
   (batchsize, V) = size(data[1])
-  V = 5
-  h = encode(model, data, seqlens, batchsize; dprob=dprob, meanrep = true, attn=true)
+  h = encode(model, data, seqlens, batchsize; dprob=dprob, meanrep=meanrep, attn=attn)
   #LOOK AT INDICES OF LOGP AND SIZE AND SUM
   ypred = h*model[:pred][1] .+ model[:pred][2]
 end
@@ -376,7 +385,7 @@ function countcorrect(ypred, ygold, correct_count, instance_count)
 	return correct=#
 end
 
-function evalsegm(model, data, seqlens, ygold)
+function evalsegm(model, data, seqlens, ygold, o)
   correct_count = zeros(1, size(ygold[1], 2))
   instance_count = zeros(1, size(ygold[1], 2))
   curloss, curright = 0.0, 0.0
@@ -385,7 +394,7 @@ function evalsegm(model, data, seqlens, ygold)
   count = 0.0
   for i = 1:length(data)
     for j = 1:length(data[i])
-      curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i]; istraining=false)
+      curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i], o; istraining=false)
       correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
       loss += curloss
       count += size(ygold[i], 1) #CHECK
@@ -399,9 +408,14 @@ function segment(model, dataset, opts, o)
   (trndata, trnseqlens, trngold, trnstats)  = dataset[:trn]
   (vlddata, vldseqlens, vldgold, vldstats) = dataset[:vld]
   (tstdata, tstseqlens, tstgold, tststats) = dataset[:tst]
+  append!(trndata, vlddata)
+  append!(trnseqlens, vldseqlens)
+  append!(trngold, vldgold)
+  trnstats += vldstats
+  (vlddata, vldseqlens, vldgold, vldstats) = (tstdata, tstseqlens, tstgold, tststats)
   println(trnstats)
   println(-trnstats/maximum(trnstats))
-  weights = softmax(-trnstats/maximum(trnstats), 2)
+  weights = softmax(-trnstats/maximum(trnstats), 2) # per class weights for loss function
   println(weights)
   flush(STDOUT)
   weights = atype(weights)
@@ -414,13 +428,22 @@ function segment(model, dataset, opts, o)
         cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
         cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
         x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i]; dprob=o[:dprob], weights=weights)
+        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i], o; weights=weights)
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
         step += 1
+        vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
+        #save the best model
+        if vld_loss < best_vld_cost
+          best_vld_cost = vld_loss
+          arrmodel = convertmodel(model)
+          println("Step: $(step) saving best model to $(pretrnp)$(o[:bestmodel])")
+          save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
+          @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
+        end
       end
     end
-    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold)
+    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
     #save the best model
     if vld_loss < best_vld_cost
       best_vld_cost = vld_loss
@@ -485,9 +508,9 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=100; help="Number of epochs per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=20; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
-    ("--filename"; arg_type=String; default="pineapple.ndjson"; help="Data file name")
+    ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
     ("--dec_rnn_size"; arg_type=Int; default=2048; help="Size of decoder.")
@@ -511,6 +534,8 @@ function main(args=ARGS)
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
     ("--testmode"; action=:store_true; help="true if in test mode")
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
+    ("--attn"; action=:store_true; help="true if model has attention")
+    ("--meanrep"; action=:store_true; help="true if model uses mean representation")
     ("--optimization"; default="Adam(;gclip = 1.0)"; help="Optimization algorithm and parameters.")
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
   end
@@ -520,7 +545,8 @@ function main(args=ARGS)
   global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
   global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
   global const kl_tolerance = o[:kl_tolerance]
-  labels = [ "L", "F", "FP"]
+  #labels = [ "L", "F", "FP"]
+  labels = [  "W", "B", "T" ,"WNDW", "FA"]
   o[:numclasses] = length(labels)
   model = initsegmenter(o)
   params = Parameters()
@@ -606,8 +632,11 @@ function main(args=ARGS)
   #vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
   #info("padding was complete")
 #  println("$(length(vldlabels)) $(length(vlddata))")
+  println("Has attention => $(o[:attn]), mean representation => $(o[:meanrep])")
+  println("Data filename => $(o[:filename])")
   flush(STDOUT)
   #@assert(length(vldlabels) == length(vlddata))
+
   segment(model, dataset, optim, o)
 end
 #main()
@@ -617,7 +646,7 @@ else
     !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
 end
 
-export revconvertmodel, encode, loaddata
+export revconvertmodel, encode, loaddata, getdata
 export getlatentvector, predict, get_mixparams
 export softmax, sample_gaussian_2d, paddall
 end

@@ -47,6 +47,28 @@ function update_annotations!(dict_data, annotations)
   end
 end
 
+function update_annotations_airplane!(dict_data, annotations)
+  println("Airplane annotations")
+  #add labels for each stroke
+  for label in keys(annotations)
+    if haskey(dict_data, label)
+      points, end_indices = getstrokes(dict_data[label])
+      #label each sketch
+      for strokenum=1:(length(end_indices)-1)
+        start_ind = end_indices[strokenum]+1
+        end_ind = end_indices[strokenum+1]
+        #get points of stroke
+        ps = points[:, start_ind:end_ind]
+        ends = [0, length(start_ind:end_ind)]
+        push!(annotations[label], (ps, ends))
+        #remove annotated stroke from pool of unannotated ones
+      end
+    #  push!(annotations[label], (points, end_indices))
+    end
+  end
+end
+
+
 function add_details!(dict_data, annotations)
   for label in keys(annotations)
     if haskey(dict_data, label)
@@ -74,7 +96,7 @@ function getannotateddata(filename, labels)
      while !eof(f)
        text_data = readline(f)  # file information to string
        dict_data = JSON.parse(text_data)  # parse and transform data
-       update_annotations!(dict_data, annotations)
+       update_annotations_airplane!(dict_data, annotations) ## CHANGE HERE
      end
   end
   return annotations

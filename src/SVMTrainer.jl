@@ -5,7 +5,7 @@ include("../idm/IDM.jl")
 module SVMTrainer
 include("DataManager.jl")
 using Drawing, DataLoader, IDM
-using JSON, SVR, ArgParse
+using JSON, SVR, ArgParse, JLD
 
 function getfeats(annotations)
   info("Extracting idm features")
@@ -14,10 +14,12 @@ function getfeats(annotations)
   #  println("$(label) $(length(annotations[label]))")
     features[label] = []
     for (points, end_indices) in annotations[label]
-      mid = sum(points, 2)/256 ##ADDING SPATIAL INFO
+      mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
       #println(size(idm), size(mid))
       idm = hcat(idm, mid')
+      idm = hcat(idm, points[:, 1]'/256)
+      idm = hcat(idm, points[:, size(points,2)]'/256)
       push!(features[label], idm)
     end
   end
@@ -140,13 +142,14 @@ function main(args=ARGS)
     ("--cv"; arg_type=Int; default=5; help="Cross validation fold parameter.")
     ("--datapath"; arg_type=String; default="../annotateddata/"; help="Path to annotated data.")
     ("--filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Filename of annotated data.")
+    ("--readydata"; action=:store_true; help="is data preprocessed and ready")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
   filename = string(o[:datapath], o[:filename])
-  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-  labels = [ "L", "F", "FP"]
+  labels = [  "W", "B", "T" ,"WNDW", "FA"]
+  #labels = [ "L", "F", "FP"]
   vldsize = 1/5
   annotations = getannotateddata(filename, labels)
   #=sketches = annotated2sketch_obj(annotations)
@@ -163,7 +166,11 @@ function main(args=ARGS)
   #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations)
-  trn_tst_indices = load("trn_tst_indices.jld")["indices"]
+  if o[:readydata]
+    trn_tst_indices = load("trn_tst_indices.jld")["indices"]
+  else
+    trn_tst_indices = nothing
+  end
   trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
   C, gamma = get_cvd_params(trnidms, o[:cv], labels)
   trainsvm(trnidms, tstidms, C, gamma, labels)

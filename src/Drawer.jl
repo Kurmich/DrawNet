@@ -1,12 +1,15 @@
 include("DrawNet.jl")
+include("Segmenter.jl")
 include("../utils/Drawing.jl")
+
 module Drawer
-using DrawNet, Drawing
+using DrawNet, Drawing, DataLoader
 using Distributions, PyPlot, SVR
-using Knet, ArgParse, JLD
-using IDM
+using Knet, ArgParse, JLD, JSON
+using IDM, Segmenter
 include("../rnns/RNN.jl")
 include("Ferret.jl")
+include("DataManager.jl")
 
 function constructsketch(points)
   points2D = zeros(2, size(points, 2)-1)
@@ -209,7 +212,7 @@ function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0,
   for i in 1:length(z_vecs)
     z = z_vecs[i]
     len = lens[i]
-    sampled_stroke_points, mixture_params, cell = sample(model, z; seqlen=len + 5,temperature=temperature, greedy_mode=greedy_mode)
+    sampled_stroke_points, mixture_params, cell = sample(model, z; seqlen=len+5, temperature=temperature, greedy_mode=greedy_mode)
     sampled_stroke_points = stroke_clean_points(sampled_stroke_points)
     push!(cells, cell)
     #println(size(sampled_stroke_points))
@@ -307,15 +310,20 @@ function main(args=ARGS)
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
     ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
-    ("--statmode"; action=:store_true; help="look at cells")
+    ("--statmode"; action=:store_true; help="look at cells.")
+    ("--segmentmode"; action=:store_true; help="segmentation mode.")
+    ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name.")
+    ("--batchsize"; arg_type=Int; default=16; help="Minibatch size. Recommend leaving at 100.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
+
   w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
   global svmmodel = SVR.loadmodel(o[:svmmodel])
-  global labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+  #global labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+  global labels = [  "W", "B", "T" ,"WNDW", "FA"]
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
@@ -349,7 +357,30 @@ function main(args=ARGS)
     end
     return
   end
-
+  if o[:segmentmode]
+    info("In segment mode")
+    vldsize = 1/5
+    params = Parameters()
+    params.batchsize = o[:batchsize]
+    filename = string(annotp, o[:filename])
+    sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
+    x, lens, x_5D = rand_strokesketch(sketchpoints3D)
+    end_indices =  find(x_5D[4, :] .== 1)
+    s = 1
+    strokes = []
+    for i= 1:length(end_indices)
+      stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+      printpoints(stroke)
+      push!(strokes, stroke)
+      s = end_indices[i] + 1
+    end
+    sketch = stroke_constructsketch(strokes)
+    info("Random sketch was obtained")
+    strokeclasses = getstrokelabels(model, x, lens)
+    println(strokeclasses)
+    saveslabeled(sketch, strokeclasses, "original.png")
+    return
+  end
   sketch = stroke_constructsketch(strokes)
   info("Random sketch was obtained")
   savesketch(sketch, "original.png")
