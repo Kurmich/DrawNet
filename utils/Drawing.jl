@@ -211,11 +211,12 @@ function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1
 close()
 end
 
-function saveslabeled(sketch::Sketch, strokeclasses, filename::String="sketch.png"; completness=1, mydpi=100, imsize=256, scaled = false)
+function saveslabeled(sketch::Sketch, strokeclasses, classnames, filename::String="sketch.png"; completness=1, mydpi=100, imsize=400, scaled = false)
   #Prints contents of current sketch
   colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan"]
   fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
   strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
+  usedclasses = Int[]
   #iterate through strokes
   for strokenum=1:(length(sketch.end_indices)-1)
     start_ind = sketch.end_indices[strokenum]+1
@@ -224,17 +225,24 @@ function saveslabeled(sketch::Sketch, strokeclasses, filename::String="sketch.pn
     x = sketch.points[1, start_ind:end_ind]
     y = sketch.points[2, start_ind:end_ind]
     g = Int(strokeclasses[strokenum])
-    println(g)
+    #println(g)
     c = colors[g]
-    println(c)
+    cn = classnames[g]
+  #  println(c)
     if strokenum <= strokelimit
-      plot(x, -y, linewidth = 1, color = c)
+      if in(g, usedclasses)
+        plot(x, -y, linewidth = 1, color = c)
+      else
+        plot(x, -y, linewidth = 1, color = c, label=cn)
+      end
     else
-      plot(x, -y, linewidth = 1, color = colors[strokeclasses[strokenum]])
+      plot(x, -y, linewidth = 1, color = colors[strokeclasses[strokenum]], label=cn)
     end
+    push!(usedclasses, g)
     if scaled
       subplots_adjust(bottom=0.,left=0.,right=1.,top=1.)
     end
+    legend()
     axis("off")
   end
   savefig(filename, dpi=mydpi)

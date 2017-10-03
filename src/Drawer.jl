@@ -306,7 +306,7 @@ function main(args=ARGS)
   @add_arg_table s begin
     ("--svmmodel"; arg_type=String; default="airplane.model"; help="Name of the pretrained svm model")
     ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
-    ("--dataset"; arg_type=String; default="r_full_simplified_airplane.jld"; help="Name of the dataset")
+    ("--dataset"; arg_type=String; default="r_full_simplified_face.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
     ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
@@ -324,6 +324,9 @@ function main(args=ARGS)
   global svmmodel = SVR.loadmodel(o[:svmmodel])
   #global labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   global labels = [  "W", "B", "T" ,"WNDW", "FA"]
+  classnames = ["wing", "body", "tail", "window", "full airplane"]
+  #global labels = [ "L", "F", "FP"]
+  #classnames = ["leaf", "fruit", "full pineapple"]
   info("Model was loaded")
   trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
@@ -346,11 +349,11 @@ function main(args=ARGS)
       end_indices =  find(x_5D[4, :] .== 1)
       s = 1
       strokes = []
-      for i= 1:length(end_indices)
-        stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
-        printpoints(stroke)
+      for j= 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[j] ], [0 0 0 0 1]')
+        #printpoints(stroke)
         push!(strokes, stroke)
-        s = end_indices[i] + 1
+        s = end_indices[j] + 1
       end
       z_vecs = get_strokelatentvecs(model, x)
       stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
@@ -362,8 +365,29 @@ function main(args=ARGS)
     vldsize = 1/5
     params = Parameters()
     params.batchsize = o[:batchsize]
+    params.min_seq_length = 1
+    params.max_seq_length = 200
     filename = string(annotp, o[:filename])
+    info("NEEDS NORMALIZATION")
     sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
+    info("Number of sketches = $(length(sketchpoints3D))")
+    for i = 1:length(sketchpoints3D)
+      x, lens, x_5D = tostrokesketch(sketchpoints3D, i)
+      end_indices =  find(x_5D[4, :] .== 1)
+      s = 1
+      strokes = []
+      for j = 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[j] ], [0 0 0 0 1]')
+        #printpoints(stroke)
+        push!(strokes, stroke)
+        s = end_indices[j] + 1
+      end
+      sketch = stroke_constructsketch(strokes)
+      strokeclasses = getstrokelabels(model, x, lens)
+      println(strokeclasses)
+      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/a$(i).png")
+    end
+
     x, lens, x_5D = rand_strokesketch(sketchpoints3D)
     end_indices =  find(x_5D[4, :] .== 1)
     s = 1
@@ -378,7 +402,7 @@ function main(args=ARGS)
     info("Random sketch was obtained")
     strokeclasses = getstrokelabels(model, x, lens)
     println(strokeclasses)
-    saveslabeled(sketch, strokeclasses, "original.png")
+    saveslabeled(sketch, strokeclasses, classnames, "original.png")
     return
   end
   sketch = stroke_constructsketch(strokes)

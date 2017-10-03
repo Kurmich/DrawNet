@@ -48,7 +48,7 @@ function update_annotations!(dict_data, annotations)
 end
 
 function update_annotations_airplane!(dict_data, annotations)
-  println("Airplane annotations")
+
   #add labels for each stroke
   for label in keys(annotations)
     if haskey(dict_data, label)
@@ -88,6 +88,7 @@ function add_details!(dict_data, annotations)
 end
 
 function getannotateddata(filename, labels)
+  println("Airplane annotations")
   annotations = Dict()
   for label in labels
     annotations[label] = []
@@ -100,6 +101,20 @@ function getannotateddata(filename, labels)
      end
   end
   return annotations
+end
+
+
+function getannotatedkeys(filename)
+  println("Getting annotated data keys")
+  akeys = Dict{String, Bool}()
+  open(filename, "r") do f
+     while !eof(f)
+       text_data = readline(f)  # file information to string
+       dict_data = JSON.parse(text_data)  # parse and transform data
+       akeys[dict_data["key_id"]] = true
+     end
+  end
+  return akeys
 end
 
 function annotated2sketch_obj(annotations)

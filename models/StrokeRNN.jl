@@ -56,7 +56,10 @@ end
 
 
 s2sVAEgrad = grad(s2sVAE)
-function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+function train(model, dataset, opts, o)
+  (trndata, trnseqlens) = dataset[:trn]
+  (vlddata, vldseqlens) = dataset[:vld]
+  (tstdata, tstseqlens) = dataset[:tst] 
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]
@@ -107,21 +110,24 @@ end
 
 
 function getlabels(sketches, labels, numbatches, params)
-  numlabels = length(labels)
+  numlabels = length(labels) #number of classes
+  instance_per_label = zeros(1, numlabels)
   onehotvecs = []
   for idx=0:(numbatches-1)
-    ygolds = zeros(params.batchsize, labels)
     start_ind = idx * params.batchsize
-    indices = (start_ind + 1):(start_ind + params.batchsize)
+    end_ind = min( (start_ind + params.batchsize), length(sketches))
+    indices = (start_ind + 1) : end_ind
+    ygolds = zeros(end_ind-start_ind, numlabels)
     batch = sketches[indices]
     for i=1:length(batch)
       sketch = batch[i]
       class = findfirst(labels, sketch.label)
       ygolds[i, class] = 1
+      instance_per_label[class] += 1
     end
     push!(onehotvecs, ygolds)
   end
-  return onehotvecs
+  return onehotvecs, instance_per_label
 end
 
 function minibatch(sketchpoints3D, numbatches, params)

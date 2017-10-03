@@ -27,7 +27,9 @@ function initsegmenter( o )
   info("Initializing encoder.")
   initencoder(model, e_H, V, imlen)
   initpredictor(model, e_H, numclasses)
-  initattention(model, e_H)
+  if o[:attn]
+    initattention(model, e_H)
+  end
   model[:fw_shifts] = getshifts(e_H)
   model[:bw_shifts] = getshifts(e_H)
   return model

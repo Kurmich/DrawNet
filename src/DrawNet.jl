@@ -213,11 +213,6 @@ function perturb(data; scalefactor=0.1)
   return pdata
 end
 
-
-function getdata(filename, params)
-  return getsketchpoints3D(filename; params = params)
-end
-
 function getstrokeseqs(x_batch_5D)
   max_stroke_count = 1
   (V, maxlen, batchsize)  = size(x_batch_5D)
@@ -315,8 +310,8 @@ function updatelr!(opts::Associative, cur_lr)
   end
 end
 
-function normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params::Parameters)
-  DataLoader.normalize!(trnpoints3D, params)
+function normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params::Parameters; scalefactor = nothing)
+  DataLoader.normalize!(trnpoints3D, params; scalefactor=scalefactor)
   DataLoader.normalize!(vldpoints3D, params; scalefactor=params.scalefactor)
   DataLoader.normalize!(tstpoints3D, params; scalefactor=params.scalefactor)
 end
@@ -337,20 +332,7 @@ function normalizeall!(idmobjs, s_avg, s_stroke)
   end
 end
 
-function savedata(filename, trndata, vlddata, tstdata)
-  rawname = split(filename, ".")[1]
-  save("../data/$(rawname).jld","train", trndata, "valid", vlddata, "test", tstdata)
-end
 
-function loaddata(filename)
-  dataset = load(filename)
-  println(filename)
-  return dataset["train"], dataset["valid"], dataset["test"]
-end
-
-function get_splitteddata(data, trnidx, vldidx, tstidx)
-  return data[trnidx], data[vldidx], data[tstidx]
-end
 
 function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing)
   #model settings
@@ -432,7 +414,7 @@ function segment(model, dataset, opts, o)
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
         step += 1
-        vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
+        #=vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
         #save the best model
         if vld_loss < best_vld_cost
           best_vld_cost = vld_loss
@@ -440,7 +422,7 @@ function segment(model, dataset, opts, o)
           println("Step: $(step) saving best model to $(pretrnp)$(o[:bestmodel])")
           save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
           @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
-        end
+        end=#
       end
     end
     vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
@@ -465,7 +447,28 @@ function segment(model, dataset, opts, o)
   end
 end
 
+
+function getdata(filename, params)
+  return getsketchpoints3D(filename; params = params)
+end
+
+function savedata(filename, trndata, vlddata, tstdata)
+  rawname = split(filename, ".")[1]
+  save("../data/$(rawname).jld","train", trndata, "valid", vlddata, "test", tstdata)
+end
+
+function loaddata(filename)
+  dataset = load(filename)
+  println(filename)
+  return dataset["train"], dataset["valid"], dataset["test"]
+end
+
+function get_splitteddata(data, trnidx, vldidx, tstidx)
+  return data[trnidx], data[vldidx], data[tstidx]
+end
+
 function makebatches(sketches, points3D, labels, params)
+  #=creates batches of annotated data=#
   batch_count = Int(ceil(length(points3D)/params.batchsize))
   params.numbatches = batch_count
   data, seqlens = minibatch(points3D, batch_count, params)
@@ -480,6 +483,147 @@ function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsket
   dataset[:vld] = makebatches(vldsketches, vldpoints3D, labels, params)
   dataset[:tst] = makebatches(tstsketches, tstpoints3D, labels, params)
   return dataset
+end
+
+
+function make_gen_dataset(trnpoints3D, vldpoints3D, tstpoints3D, params)
+  #minibatch
+  trn_batch_count = div(length(trnpoints3D), params.batchsize)
+  params.numbatches = trn_batch_count
+  trndata, trnseqlens = minibatch(trnpoints3D, trn_batch_count-1, params)
+  vld_batch_count = div(length(vldpoints3D), params.batchsize)
+  params.numbatches = vld_batch_count
+  vlddata, vldseqlens= minibatch(vldpoints3D, vld_batch_count-1, params)
+  tst_batch_count = div(length(tstpoints3D), params.batchsize)
+  params.numbatches = tst_batch_count
+  tstdata, tstseqlens = minibatch(tstpoints3D, tst_batch_count-1, params)
+  #normalizeidms!(trnidm, vldidm, tstidm)
+  #create dataset
+  dataset = Dict()
+  dataset[:trn] = (trndata, trnseqlens)
+  dataset[:vld] = (vlddata, vldseqlens)
+  dataset[:tst] = (tstdata, tstseqlens)
+  return dataset
+end
+
+function get_gen_data(o, params)
+  #=Create dataset for generator model=#
+
+  #get sketches
+  sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
+  trnidx, vldidx, tstidx = splitdata(sketchpoints3D)
+
+  info("data was split")
+  trnpoints3D, vldpoints3D, tstpoints3D = get_splitteddata(sketchpoints3D, trnidx, vldidx, tstidx)
+  trnsketches, vldsketches, tstsketches = get_splitteddata(sketches, trnidx, vldidx, tstidx)
+  #save the data
+  savedata("idx$(o[:filename])", trnidx, vldidx, tstidx)
+  savedata("data$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
+
+  #normalize sketches
+  info("In nomralization phase")
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
+  dataset = make_gen_dataset(trnpoints3D, vldpoints3D, tstpoints3D, params)
+  return dataset
+end
+
+function get_seg_data(filename, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
+  #=Create dataset for segmentation model=#
+  filename = string(annotp, filename)
+  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+
+  annotations = getannotateddata(filename, labels)
+  sketches = annotated2sketch_obj(annotations)
+  for (key, value) in sketches
+      println(key, " ==> ", length(value))
+  end
+  if trn_tst_indices == nothing
+    trn_tst_indices = randindinces(sketches)
+    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices) #get even split as dictionary
+    trn_vld_indices = randindinces(trndict)
+    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
+    trntstidxfile, trnvldidxfile  = "$(rawname)trn_tst_indices.jld", "$(rawname)trn_vld_indices.jld"
+    println("TRN-VLD-TST split was created and saved to: $(trntstidxfile) $(trnvldidxfile)")
+    save(trntstidxfile, "indices" ,trn_tst_indices)
+    save(trnvldidxfile, "indices" ,trn_vld_indices)
+  else
+    println("TRN-VLD-TST split was loaded")
+    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices)
+    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
+  end
+  trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
+  vlddata = dict2list(vlddict)
+  tstdata = dict2list(tstdict) #as list
+  @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
+  trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
+  vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
+  tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
+  println("IN NORMALIZATION PHASE")
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params; scalefactor=43.75384)
+  @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
+  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, labels, params)
+  @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(trndata))
+  @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(vlddata))
+  return dataset
+end
+
+
+function segmentation_mode(o)
+  global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
+  global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
+  global const kl_tolerance = o[:kl_tolerance]
+  #labels = [ "L", "F", "FP"]
+  labels = ["W", "B", "T", "WNDW", "FA"]
+  o[:numclasses] = length(labels)
+  model = initsegmenter(o)
+  params = Parameters()
+  params.batchsize = o[:batchsize]
+  params.min_seq_length = 1
+  global optim = initoptim(model, o[:optimization])
+  vldsize = 1/5
+  smooth = true
+  rawname = split(o[:filename], ".")[1]
+  if !o[:readydata]
+    dataset = get_seg_data(o[:filename], labels, vldsize; params=params)
+  else
+    #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+    trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"]
+    trn_vld_indices = load("$(rawname)trn_vld_indices.jld")["indices"]
+    dataset = get_seg_data(o[:filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
+  end
+
+  println("Starting training")
+  println("Has attention => $(o[:attn]), mean representation => $(o[:meanrep])")
+  println("Data filename => $(o[:filename])")
+  flush(STDOUT)
+
+  segment(model, dataset, optim, o)
+end
+
+function generation_mode(o)
+  global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
+  global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
+  global const kl_tolerance = o[:kl_tolerance]
+  model = initmodel(o)
+  params = Parameters()
+  global optim = initoptim(model, o[:optimization])
+  if !o[:readydata]
+    #create minibatched dataset
+    dataset = get_gen_data(o, params)
+  else
+    #create minibatched dataset from predivided dataset
+    println("Loading data for training!")
+    trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
+    dataset = make_gen_dataset(trnpoints3D, vldpoints3D, tstpoints3D, params)
+  #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
+  end
+  println("Starting training")
+  reportmodel(model)
+#  trndata = paddall(trndata, trnidmtuples, o[:imlen])
+  #vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
+  #info("padding was complete")
+  flush(STDOUT)
+  train(model, dataset, optim, o)
 end
 
 # initoptim creates optimization parameters for each numeric weight
@@ -508,8 +652,9 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=20; help="Number of epochs per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
+    ("--sfilename"; arg_type=String; default="airplane.ndjson"; help="Data file name")
     ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name")
     ("--bestmodel"; arg_type=String; default="bestmodel.jld"; help="File with the best model")
     ("--tmpmodel"; arg_type=String; default="tmpmodel.jld"; help="File with intermediate models")
@@ -536,108 +681,19 @@ function main(args=ARGS)
     ("--pretrained"; action=:store_true; help="true if pretrained model exists")
     ("--attn"; action=:store_true; help="true if model has attention")
     ("--meanrep"; action=:store_true; help="true if model uses mean representation")
+    ("--segmode"; action=:store_true; help="Store true if in segmentation mode")
     ("--optimization"; default="Adam(;gclip = 1.0)"; help="Optimization algorithm and parameters.")
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-  global const KL = KLparameters(o[:wkl], o[:kl_weight_start], o[:kl_decay_rate]) #Kullback-Leibler(KL) parameters
-  global const LRP = LRparameters(o[:lr], o[:minlr], o[:lr_decay_rate]) #Learning Rate Parameters(LRP)
-  global const kl_tolerance = o[:kl_tolerance]
-  #labels = [ "L", "F", "FP"]
-  labels = [  "W", "B", "T" ,"WNDW", "FA"]
-  o[:numclasses] = length(labels)
-  model = initsegmenter(o)
-  params = Parameters()
-  params.batchsize = o[:batchsize]
-  params.min_seq_length = 1
-  global optim = initoptim(model, o[:optimization])
-  vldsize = 1/5
-  smooth = true
-  if !o[:readydata]
-    filename = string(annotp, o[:filename])
-    #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-
-    annotations = getannotateddata(filename, labels)
-    sketches = annotated2sketch_obj(annotations)
-    for (key, value) in sketches
-        println(key, " ==> ", length(value))
-    end
-    trn_tst_indices = randindinces(sketches)
-    save("trn_tst_indices.jld", "indices" ,trn_tst_indices)
-    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices) #get even split as dictionary
-    trn_vld_indices = randindinces(trndict)
-    save("trn_vld_indices.jld", "indices" ,trn_vld_indices)
-    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
-    trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
-    vlddata = dict2list(vlddict)
-    tstdata = dict2list(tstdict) #as list
-    @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
-    trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
-    vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
-    tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
-    @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
-    #savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
-    savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
-    #savedata("labels$(o[:imlen])$(o[:filename])", trnlabels, vldlabels, tstlabels)
-    #=
-    sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
-    trnidx, vldidx, tstidx = splitdata(sketchpoints3D)
-    info("data was split")
-    trnpoints3D, vldpoints3D, tstpoints3D = get_splitteddata(sketchpoints3D, trnidx, vldidx, tstidx)
-    trnsketches, vldsketches, tstsketches = get_splitteddata(sketches, trnidx, vldidx, tstidx)
-    info("getting idm objects")
-    #trnidm = get_idm_objects(trnsketches; imlen = o[:imlen], smooth = smooth)
-    #vldidm = get_idm_objects(vldsketches; imlen = o[:imlen], smooth = smooth)
-    #tstidm = get_idm_objects(tstsketches; imlen = o[:imlen], smooth = smooth)
-    info("In nomralization phase")
-    normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
-    #normalizeidms!(trnidm, vldidm, tstidm)
-    savedata("idx$(o[:imlen])$(o[:filename])", trnidx, vldidx, tstidx)
-    savedata("data$(o[:imlen])$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
-    #savedata("idm$(o[:imlen])$(o[:filename])", trnidm, vldidm, tstidm)
-    #save_idmtuples(o[:filename], trnpoints3D, vldpoints3D, tstpoints3D)=#
+  if o[:segmode]
+    #in segmenta mode
+    segmentation_mode(o)
   else
-    filename = string(annotp, o[:filename])
-    #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-
-    annotations = getannotateddata(filename, labels)
-    sketches = annotated2sketch_obj(annotations)
-    for (key, value) in sketches
-        println(key, " ==> ", length(value))
-    end
-    println("Loading data for training!")
-    trn_tst_indices = load("trn_tst_indices.jld")["indices"]
-    trn_vld_indices = load("trn_vld_indices.jld")["indices"]
-    trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices)
-    trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
-    trndata = dict2list(trndict)  #as list ,> this is list of lists we need just list of sketches
-    vlddata = dict2list(vlddict)
-    tstdata = dict2list(tstdict) #as list
-    @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
-    trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
-    vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
-    tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
-    @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
-  #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
+    generation_mode(o)
   end
-  trnidm, vldidm, tstidm = nothing, nothing, nothing
-  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, labels, params)
-  @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(trndata))
-  @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(vlddata))
-  println("Starting training")
-  #reportmodel(model)
-#  trndata = paddall(trndata, trnidmtuples, o[:imlen])
-  #vlddata = paddall(vlddata, vldidmtuples, o[:imlen])
-  #info("padding was complete")
-#  println("$(length(vldlabels)) $(length(vlddata))")
-  println("Has attention => $(o[:attn]), mean representation => $(o[:meanrep])")
-  println("Data filename => $(o[:filename])")
-  flush(STDOUT)
-  #@assert(length(vldlabels) == length(vlddata))
-
-  segment(model, dataset, optim, o)
 end
 #main()
 if VERSION >= v"0.5.0-dev+7720"

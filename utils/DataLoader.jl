@@ -2,7 +2,7 @@ include("Drawing.jl")
 module DataLoader
 using JSON
 using Drawing
-
+include("../src/DataManager.jl")
 type Parameters
   batchsize::Int
   max_seq_length::Int
@@ -14,9 +14,10 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=60, min_seq_length=30, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=60, min_seq_length=20, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
+global const annotp = "../annotateddata/"
 
 function getstrokes(drawing)
   points = Int[]
@@ -52,12 +53,18 @@ function getsketch(sketch_as_dict::Dict)
 end
 
 function get_sketch_objects(filename)
+  akeys = getannotatedkeys(string(annotp, "airplane1014.ndjson")) #SKIP ANNOTATED ONES
+
   sketch_objects = []
   open(filename, "r") do f
      while !eof(f)
        sketch_as_dict = Dict()
        sketch_as_text = readline(f)  # file information to string
        sketch_as_dict = JSON.parse(sketch_as_text)  # parse and transform data
+       if haskey(akeys, sketch_as_dict["key_id"])
+        # info("skipping")
+         continue #SKIP ANNOTATED ONES
+       end
        sketch = getsketch(sketch_as_dict)
        if sketch != nothing
          push!(sketch_objects, sketch)
@@ -126,6 +133,7 @@ function normalize!(sketchpoints3D, params::Parameters; scalefactor = nothing)
   #=Normalize entire dataset (delta_x, delta_y) by the scaling factor.=#
   scalefactor = (scalefactor == nothing)? get_scalefactor(sketchpoints3D) : scalefactor
   params.scalefactor = scalefactor
+  println("Normalizing by $(scalefactor)")
   for points in sketchpoints3D
     points[1:2, :] /= scalefactor
   end
