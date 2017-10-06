@@ -13,7 +13,7 @@ function getfeats(annotations)
   for label in keys(annotations)
   #  println("$(label) $(length(annotations[label]))")
     features[label] = []
-    for (points, end_indices) in annotations[label]
+    for (points, end_indices, sketch) in annotations[label]
       mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
       #println(size(idm), size(mid))

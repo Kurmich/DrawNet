@@ -213,6 +213,7 @@ function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0,
     z = z_vecs[i]
     len = lens[i]
     sampled_stroke_points, mixture_params, cell = sample(model, z; seqlen=len+5, temperature=temperature, greedy_mode=greedy_mode)
+    println(size(sampled_stroke_points))
     sampled_stroke_points = stroke_clean_points(sampled_stroke_points)
     push!(cells, cell)
     #println(size(sampled_stroke_points))
@@ -264,7 +265,7 @@ function makesequence(points5D)
 end
 
 function tostrokesketch(points3D, idx)
-  x_5D = to_big_points(points3D[idx]; max_len = 60)
+  x_5D = to_big_points(points3D[idx]; max_len = 150)
   end_indices =  find(x_5D[4, :] .== 1)
   push!(end_indices, size(x_5D, 2))
   strokecount = Int(sum(x_5D[4, :]))
@@ -306,7 +307,8 @@ function main(args=ARGS)
   @add_arg_table s begin
     ("--svmmodel"; arg_type=String; default="airplane.model"; help="Name of the pretrained svm model")
     ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
-    ("--dataset"; arg_type=String; default="r_full_simplified_face.jld"; help="Name of the dataset")
+    ("--gmodel"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
+    ("--dataset"; arg_type=String; default="r_full_simplified_airplane.jld"; help="Name of the dataset")
     ("--T"; arg_type=Float64; default=1.0; help="Temperature.")
     ("--greedy"; action=:store_true; help="is data preprocessed and ready")
     ("--imlen"; arg_type=Int; default=0; help="Image dimentions.")
@@ -314,6 +316,7 @@ function main(args=ARGS)
     ("--segmentmode"; action=:store_true; help="segmentation mode.")
     ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name.")
     ("--batchsize"; arg_type=Int; default=16; help="Minibatch size. Recommend leaving at 100.")
+    ("--hascontext"; action=:store_true; help="Store true if context info is used")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -328,7 +331,7 @@ function main(args=ARGS)
   #global labels = [ "L", "F", "FP"]
   #classnames = ["leaf", "fruit", "full pineapple"]
   info("Model was loaded")
-  trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:imlen])$(o[:dataset])")
+  trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
 #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   info("Train, Valid, Test data obtained")
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
@@ -361,8 +364,13 @@ function main(args=ARGS)
     return
   end
   if o[:segmentmode]
+    if o[:hascontext]
+      w = load("$(pretrnp)$(o[:gmodel])")
+      genmodel = revconvertmodel(w["model"])
+    end
     info("In segment mode")
     vldsize = 1/5
+    scalefactor = 43.8
     params = Parameters()
     params.batchsize = o[:batchsize]
     params.min_seq_length = 1
@@ -370,6 +378,9 @@ function main(args=ARGS)
     filename = string(annotp, o[:filename])
     info("NEEDS NORMALIZATION")
     sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
+    sketchpoints3D = tstpoints3D
+    DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
+
     info("Number of sketches = $(length(sketchpoints3D))")
     for i = 1:length(sketchpoints3D)
       x, lens, x_5D = tostrokesketch(sketchpoints3D, i)
@@ -385,7 +396,7 @@ function main(args=ARGS)
       sketch = stroke_constructsketch(strokes)
       strokeclasses = getstrokelabels(model, x, lens)
       println(strokeclasses)
-      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/a$(i).png")
+      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/e$(i).png")
     end
 
     x, lens, x_5D = rand_strokesketch(sketchpoints3D)

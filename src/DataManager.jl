@@ -48,7 +48,7 @@ function update_annotations!(dict_data, annotations)
 end
 
 function update_annotations_airplane!(dict_data, annotations)
-
+  sketch = getsketch(dict_data)
   #add labels for each stroke
   for label in keys(annotations)
     if haskey(dict_data, label)
@@ -60,7 +60,7 @@ function update_annotations_airplane!(dict_data, annotations)
         #get points of stroke
         ps = points[:, start_ind:end_ind]
         ends = [0, length(start_ind:end_ind)]
-        push!(annotations[label], (ps, ends))
+        push!(annotations[label], (ps, ends, sketch))
         #remove annotated stroke from pool of unannotated ones
       end
     #  push!(annotations[label], (points, end_indices))
@@ -119,15 +119,18 @@ end
 
 function annotated2sketch_obj(annotations)
   sketch_objects = Dict()
+  full_sketch_objects = Dict()
   for label in keys(annotations)
     if ! haskey(sketch_objects, label)
       sketch_objects[label] = []
+      full_sketch_objects[label] = []
     end
-    for (points, end_indices) in annotations[label]
-      push!(sketch_objects[label], Sketch(label, true, "keyid", points, end_indices))
+    for (points, end_indices, sketch) in annotations[label]
+      push!(sketch_objects[label], Sketch(label, true, sketch.key_id, points, end_indices))
+      push!(full_sketch_objects[label], sketch)
     end
   end
-  return sketch_objects
+  return sketch_objects, full_sketch_objects
 end
 
 function dict2list(dictdata)

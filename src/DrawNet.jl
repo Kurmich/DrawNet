@@ -54,11 +54,18 @@ function initstate(batchsize, state0)
     return (h,c)
 end
 
-function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool = false, attn::Bool = false)
+function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool = false, attn::Bool = false, istate = nothing)
   #Initialize states for forward-backward rnns
   maxlen = maximum(seqlens) #maximum length of the input sequence
-  statefw = initstate(batchsize, model[:fw_state0])
-  statebw = initstate(batchsize, model[:bw_state0])
+#  statefw = initstate(batchsize, model[:fw_state0])
+#  statebw = initstate(batchsize, model[:bw_state0])
+  if istate != nothing
+    statefw = istate
+    statebw = istate
+  else
+    statefw = initstate(batchsize, model[:fw_state0])
+    statebw = initstate(batchsize, model[:bw_state0])
+  end
   fwa, bwa = nothing, nothing
   if meanrep || attn
     fwmean = atype(zeros(size(statefw[1])))
@@ -73,6 +80,7 @@ function encode(model, data, seqlens, batchsize::Int; dprob = 0, meanrep::Bool =
   hasembed, hasshift = haskey(w, :fw_embed), haskey(w, :fw_shifts)
   alpha, beta  = hasshift ? (model[:fw_shifts][1], model[:fw_shifts][2]) : (nothing, nothing)
   for i = 1:maxlen
+    #println(size(data[i]), size(model[:fw_embed]))
     input = hasembed ? data[i] * model[:fw_embed] : data[i]
     statefw = lstm(model[:fw_encode], statefw, input; alpha=alpha, beta=beta, dprob=dprob)
     if meanrep
@@ -142,8 +150,9 @@ model - pretrained model
 function getlatentvector(model, inputpoints)
   #model settings
   seqlen = length(inputpoints)
+  batchsize = size(inputpoints[1], 1)
   z_size = size(model[:z][1], 1) #size of latent vector z
-  h = encode(model, inputpoints, seqlen, 1)
+  h = encode(model, inputpoints, seqlen, batchsize)
   #compute latent vector
   mu = h*model[:mu][1] .+ model[:mu][2]
   sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
@@ -191,6 +200,15 @@ function padidms(x, strokeidms, imlen)
     end
   end
   return newx
+end
+
+function appendlatentvec(data, z)
+  adata = []
+  for i=1:length(data)
+    result = hcat(data[i], z)
+    push!(adata, result)
+  end
+  return adata
 end
 
 #random scaling of x and y values
@@ -333,15 +351,75 @@ function normalizeall!(idmobjs, s_avg, s_stroke)
 end
 
 
+function classify_w_context(model, data, f_data, ygold, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
+  maxlen = maximum(seqlen) #maximum length of the input sequence
+  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+  (batchsize, V) = size(data[1])
+  d_H = size(model[:output][1], 1) #decoder hidden unit size
+  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
+  h = encode(model, f_data, length(f_data), batchsize; dprob=dprob) #encode using full sketch
+  #predecoder step
+  mu = h*model[:mu][1] .+ model[:mu][2]
+  sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
+  sigma = exp( sigma_cap/2 )
+  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0.0, std=1.0) )
 
-function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing)
+  #decoder step
+  hc = tanh(z * model[:z][1] .+ model[:z][2])
+  state = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
+  penstate_loss = 0
+  offset_loss = 0
+  w = AutoGrad.getval(model)
+  hasembed, hasshift = haskey(w, :embed), haskey(w, :dec_shifts)
+  alpha, beta  = hasshift ? (model[:dec_shifts][1], model[:dec_shifts][2]) : (nothing, nothing)
+  for i = 2:maxlen
+    #dims data = [batchsize, V] = [batchsize, 5]
+    input = hcat(data[i-1][:, 1:V], z) #concatenate latent vector with previous point
+    if hasembed
+      input = input * model[:embed]
+    end
+    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta, dprob=dprob)
+  end
+  ypred =  predict(model[:pred], state[1]) #get output params
+  softloss = -sum(ygold .* ynorm)/size(ygold, 1)
+  kl_loss = -sum((1 + sigma_cap - mu.*mu - exp(sigma_cap))) / (2*z_size*batchsize)   #Kullback-Leibler divergence loss term
+  if istraining
+    kl_loss = max(kl_loss, kl_tolerance)
+  else
+    return softloss, kl_loss, ypred
+  end
+  loss = softloss + wkl*kl_loss
+  return loss
+end
+
+
+function eval_w_context(model, data, f_data, seqlens, ygold, o; genmodel = nothing)
+  correct_count = zeros(1, size(ygold[1], 2))
+  instance_count = zeros(1, size(ygold[1], 2))
+  curloss, curright = 0.0, 0.0
+  loss, correct = 0.0, 0.0
+  ygold = map(a->convert(atype, a), ygold)
+  count = 0.0
+  for i = 1:length(data)
+    for j = 1:length(data[i])
+      curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), f_data[i], seqlens[i][j], ygold[i], o; istraining=false)
+      correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
+      loss += curloss
+      count += size(ygold[i], 1) #CHECK
+    end
+  end
+  return loss/count, correct_count, instance_count
+end
+
+
+function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing, istate = nothing)
   #model settings
   if !istraining
-    ypred = pred(model, data, seqlen; dprob=0, meanrep=o[:meanrep], attn=o[:attn])
+    ypred = pred(model, data, seqlen; dprob=0, meanrep=o[:meanrep], attn=o[:attn], istate=istate)
     ynorm = logp(ypred, 2)
     return -sum(ygold .* ynorm)/size(ygold, 1), ypred
   end
-  ypred = pred(model, data, seqlen; dprob=o[:dprob], meanrep=o[:meanrep], attn=o[:attn])
+  ypred = pred(model, data, seqlen; dprob=o[:dprob], meanrep=o[:meanrep], attn=o[:attn], istate=istate)
   ynorm = logp(ypred, 2)
   if weights == nothing
     return -sum(ygold .* ynorm)/size(ygold, 1)
@@ -349,9 +427,9 @@ function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Boo
   return -sum(ygold .* ynorm .* weights)/size(ygold, 1)
 end
 
-function pred(model, data, seqlens; dprob = 0, meanrep::Bool = false, attn::Bool = false )
+function pred(model, data, seqlens; dprob = 0, meanrep::Bool = false, attn::Bool = false, istate = nothing )
   (batchsize, V) = size(data[1])
-  h = encode(model, data, seqlens, batchsize; dprob=dprob, meanrep=meanrep, attn=attn)
+  h = encode(model, data, seqlens, batchsize; dprob=dprob, meanrep=meanrep, attn=attn, istate=istate)
   #LOOK AT INDICES OF LOGP AND SIZE AND SUM
   ypred = h*model[:pred][1] .+ model[:pred][2]
 end
@@ -367,7 +445,7 @@ function countcorrect(ypred, ygold, correct_count, instance_count)
 	return correct=#
 end
 
-function evalsegm(model, data, seqlens, ygold, o)
+function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing)
   correct_count = zeros(1, size(ygold[1], 2))
   instance_count = zeros(1, size(ygold[1], 2))
   curloss, curright = 0.0, 0.0
@@ -376,7 +454,21 @@ function evalsegm(model, data, seqlens, ygold, o)
   count = 0.0
   for i = 1:length(data)
     for j = 1:length(data[i])
-      curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i], o; istraining=false)
+      if o[:hascontext]
+        d_H = size(genmodel[:output][1], 1)
+        x = map(a->convert(atype, a), data[i][j])
+        z = getlatentvector(genmodel, x)
+        x = appendlatentvec(x, z)
+        #=x = map(a->convert(atype, a), data[i][j])
+        f_x = map(a->convert(atype, a), f_data[i])
+        z = getlatentvector(genmodel, f_x)
+        x = appendlatentvec(x, z)=#
+        hc = tanh(z * model[:z][1] .+ model[:z][2])
+        istate = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
+        curloss, ypred = classify(model, x, seqlens[i][j], ygold[i], o; istraining=false, istate=istate)
+      else
+        curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i], o; istraining=false)
+      end
       correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
       loss += curloss
       count += size(ygold[i], 1) #CHECK
@@ -386,15 +478,18 @@ function evalsegm(model, data, seqlens, ygold, o)
 end
 
 gradloss = grad(classify)
-function segment(model, dataset, opts, o)
-  (trndata, trnseqlens, trngold, trnstats)  = dataset[:trn]
-  (vlddata, vldseqlens, vldgold, vldstats) = dataset[:vld]
-  (tstdata, tstseqlens, tstgold, tststats) = dataset[:tst]
+function segment(model, dataset, opts, o; genmodel = nothing)
+  (trndata, trnseqlens, trngold, trnstats, f_trndata, f_trnseqlens)  = dataset[:trn]
+  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens) = dataset[:vld]
+  (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens) = dataset[:tst]
   append!(trndata, vlddata)
   append!(trnseqlens, vldseqlens)
+  append!(f_trndata, f_vlddata)
+  append!(f_trnseqlens, f_vldseqlens)
   append!(trngold, vldgold)
   trnstats += vldstats
   (vlddata, vldseqlens, vldgold, vldstats) = (tstdata, tstseqlens, tstgold, tststats)
+  f_vlddata = f_tstdata
   println(trnstats)
   println(-trnstats/maximum(trnstats))
   weights = softmax(-trnstats/maximum(trnstats), 2) # per class weights for loss function
@@ -407,10 +502,25 @@ function segment(model, dataset, opts, o)
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
       for j = 1:length(trndata[i])
+        @assert(length(trndata[i]) == 1)
         cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
         cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
         x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i], o; weights=weights)
+        if o[:hascontext]
+          d_H = size(genmodel[:output][1], 1)
+          x = map(a->convert(atype, a), x)
+          z = getlatentvector(genmodel, x)
+          x = appendlatentvec(x, z)
+          #=x = map(a->convert(atype, a), x)
+          f_x = map(a->convert(atype, a), f_trndata[i])
+          z = getlatentvector(genmodel, f_x)
+          x = appendlatentvec(x, z)=#
+          hc = tanh(z * model[:z][1] .+ model[:z][2])
+          istate = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
+          grads = gradloss(model, x, trnseqlens[i][j], trngold[i], o; weights=weights, istate=istate)
+        else
+          grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i], o; weights=weights)
+        end
         updatelr!(opts, cur_lr)
         update!(model, grads, opts)
         step += 1
@@ -425,7 +535,7 @@ function segment(model, dataset, opts, o)
         end=#
       end
     end
-    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
+    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel)
     #save the best model
     if vld_loss < best_vld_cost
       best_vld_cost = vld_loss
@@ -467,21 +577,22 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
-function makebatches(sketches, points3D, labels, params)
+function makebatches(sketches, points3D, f_points3D, labels, params; full::Bool = false)
   #=creates batches of annotated data=#
   batch_count = Int(ceil(length(points3D)/params.batchsize))
   params.numbatches = batch_count
+  f_data, f_seqlens =  sketch_minibatch(f_points3D, batch_count, params)
   data, seqlens = minibatch(points3D, batch_count, params)
   ygolds, instance_per_label = getlabels(sketches, labels, batch_count, params)
   @assert(length(ygolds) == length(data))
-  return (data, seqlens, ygolds, instance_per_label)
+  return (data, seqlens, ygolds, instance_per_label, f_data, f_seqlens)
 end
 
-function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches,tstpoints3D, labels, params)
+function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, params)
   dataset = Dict()
-  dataset[:trn] = makebatches(trnsketches, trnpoints3D, labels, params)
-  dataset[:vld] = makebatches(vldsketches, vldpoints3D, labels, params)
-  dataset[:tst] = makebatches(tstsketches, tstpoints3D, labels, params)
+  dataset[:trn] = makebatches(trnsketches, trnpoints3D, f_trnpoints3D, labels, params)
+  dataset[:vld] = makebatches(vldsketches, vldpoints3D, f_vldpoints3D, labels, params)
+  dataset[:tst] = makebatches(tstsketches, tstpoints3D, f_tstpoints3D, labels, params)
   return dataset
 end
 
@@ -516,27 +627,22 @@ function get_gen_data(o, params)
   info("data was split")
   trnpoints3D, vldpoints3D, tstpoints3D = get_splitteddata(sketchpoints3D, trnidx, vldidx, tstidx)
   trnsketches, vldsketches, tstsketches = get_splitteddata(sketches, trnidx, vldidx, tstidx)
+  #normalize sketches
+  info("In nomralization phase")
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
   #save the data
   savedata("idx$(o[:filename])", trnidx, vldidx, tstidx)
   savedata("data$(o[:filename])", trnpoints3D, vldpoints3D, tstpoints3D)
 
-  #normalize sketches
-  info("In nomralization phase")
-  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params)
   dataset = make_gen_dataset(trnpoints3D, vldpoints3D, tstpoints3D, params)
   return dataset
 end
 
-function get_seg_data(filename, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
-  #=Create dataset for segmentation model=#
-  filename = string(annotp, filename)
-  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+function link2sketches(trnsketches, vldsketches, tstsketches, dict_sketches, params)
 
-  annotations = getannotateddata(filename, labels)
-  sketches = annotated2sketch_obj(annotations)
-  for (key, value) in sketches
-      println(key, " ==> ", length(value))
-  end
+end
+
+function makesplit(sketches, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
   if trn_tst_indices == nothing
     trn_tst_indices = randindinces(sketches)
     trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices) #get even split as dictionary
@@ -559,11 +665,27 @@ function get_seg_data(filename, labels, vldsize; trn_tst_indices = nothing, trn_
   vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
   tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
   println("IN NORMALIZATION PHASE")
-  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params; scalefactor=43.75384)
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params; scalefactor=43.8)
   @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
-  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, labels, params)
-  @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(trndata))
-  @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(vlddata))
+  return trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices
+end
+
+function get_seg_data(filename, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
+  #=Create dataset for segmentation model=#
+  filename = string(annotp, filename)
+  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+
+  annotations = getannotateddata(filename, labels)
+  sketches, full_sketches = annotated2sketch_obj(annotations)
+  for (key, value) in sketches
+      println(key, " ==> ", length(value))
+  end
+  trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices = makesplit(sketches, labels, vldsize; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
+  f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, f_trn_tst_indices, f_trn_vld_indices = makesplit(full_sketches, labels, vldsize; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
+  f_trnpoints3D, f_vldpoints3D, f_tstpoints3D
+  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, params)
+  @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(f_trnsketches))
+  @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(f_vldpoints3D))
   return dataset
 end
 
@@ -596,8 +718,14 @@ function segmentation_mode(o)
   println("Has attention => $(o[:attn]), mean representation => $(o[:meanrep])")
   println("Data filename => $(o[:filename])")
   flush(STDOUT)
-
-  segment(model, dataset, optim, o)
+  if o[:hascontext]
+    println("Loading context model.")
+    w = load("$(pretrnp)$(o[:model])")
+    genmodel = revconvertmodel(w["model"])
+  else
+    genmodel = nothing
+  end
+  segment(model, dataset, optim, o; genmodel=genmodel)
 end
 
 function generation_mode(o)
@@ -652,7 +780,7 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
-    ("--save_every"; arg_type=Int; default=10; help="Number of epochs per checkpoint creation.")
+    ("--save_every"; arg_type=Int; default=1; help="Number of epochs per checkpoint creation.")
     ("--dec_model"; arg_type=String; default="lstm"; help="Decoder: lstm, or ....")
     ("--sfilename"; arg_type=String; default="airplane.ndjson"; help="Data file name")
     ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name")
@@ -673,7 +801,7 @@ function main(args=ARGS)
     ("--kl_tolerance"; arg_type=Float64; default=0.05; help="Level of KL loss at which to stop optimizing for KL.") #KL_min
     ("--kl_decay_rate"; arg_type=Float64; default=0.99995; help="KL annealing decay rate per minibatch.") #PER MINIBATCH = R
     ("--kl_weight_start"; arg_type=Float64; default=0.01; help="KL start weight when annealing.")# n_min
-    ("--lr"; arg_type=Float64; default=0.00006; help="Learning rate")
+    ("--lr"; arg_type=Float64; default=0.0001; help="Learning rate")
     ("--minlr"; arg_type=Float64; default=0.00001; help="Minimum learning rate.")
     ("--lr_decay_rate"; arg_type=Float64; default=0.9999; help="Minimum learning rate.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready")
@@ -682,8 +810,10 @@ function main(args=ARGS)
     ("--attn"; action=:store_true; help="true if model has attention")
     ("--meanrep"; action=:store_true; help="true if model uses mean representation")
     ("--segmode"; action=:store_true; help="Store true if in segmentation mode")
+    ("--hascontext"; action=:store_true; help="Store true if context info is used")
     ("--optimization"; default="Adam(;gclip = 1.0)"; help="Optimization algorithm and parameters.")
     ("--dataset"; arg_type=String; default="full_simplified_airplane.jld"; help="Name of the dataset")
+    ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -704,5 +834,5 @@ end
 
 export revconvertmodel, encode, loaddata, getdata
 export getlatentvector, predict, get_mixparams
-export softmax, sample_gaussian_2d, paddall
+export softmax, sample_gaussian_2d, paddall, appendlatentvec
 end

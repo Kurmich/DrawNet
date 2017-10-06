@@ -18,14 +18,42 @@ function reportmodel(model)
   @printf("Num of mixtures: %d, num of encoder units: %d , num of decoder units: %d, latent vector size: %d \n", M, e_H, d_H, z_size)
 end
 
+function initconsegmenter( o )
+  e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
+  V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
+  model = Dict{Symbol, Any}()
+  info("Initializing encoder.")
+  initencoder(model, e_H, V, 0)
+  info("Encoder was initialized. Initializing predecoder.")
+  initpredecoder(model, e_H, d_H, z_size, imlen)
+  info("Predecoder was initialized. Initializing decoder.")
+  initsegdecoder(model, d_H, V, num_mixture, z_size, imlen)
+  info("Decoder was initialized. Initializing shifts.")
+  initshifts(model, e_H, d_H, z_size)
+  info("Initialization complete.")
+end
+
+function initsegdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int, imlen::Int)
+  #incoming input dims = [batchsize, z_size + V]
+#  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
+  model[:decode] = [ initxav(z_size + V + H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+end
+
 function initsegmenter( o )
   #initial hidden and cell states of forward encoder
   e_H, numclasses = o[:enc_rnn_size], o[:numclasses]
+  d_H = o[:dec_rnn_size]
+  e_H = d_H
   V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
-  imlen = 0
   model = Dict{Symbol, Any}()
+  if !o[:hascontext]
+    z_size = 0
+  else
+    model[:z] = [initxav(z_size, 2e_H), initzeros(1, 2e_H)]
+  end
+
   info("Initializing encoder.")
-  initencoder(model, e_H, V, imlen)
+  initencoder(model, e_H, V, z_size)
   initpredictor(model, e_H, numclasses)
   if o[:attn]
     initattention(model, e_H)
@@ -87,15 +115,15 @@ model -> rnn model
 H -> size of hidden state of the encoder
 V -> point vector size (i.e. 5 for (delta_x, delta_y, p1, p2, p3))
 =#
-function initencoder(model, H::Int, V::Int, imlen::Int)
+function initencoder(model, H::Int, V::Int, z_size::Int)
   #incoming input -> dims = (batchsize, V=5)
   model[:fw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:fw_embed] = initxav(V + imlen^2, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
+  model[:fw_embed] = initxav(V + z_size, H) # x = input * model[:fw_embed]; x_dims = [batchsize, H]
   #here x and hidden will be concatenated form lstm_input with dims = [batchsize, H]
   model[:fw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
   #same analysis goes for the decoder
   model[:bw_state0] = [initxav(1, H), initzeros(1, H)]
-  model[:bw_embed] = initxav(V+imlen^2, H)
+  model[:bw_embed] = initxav(V+z_size, H)
   model[:bw_encode] = [ initxav(2H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
 end
 
