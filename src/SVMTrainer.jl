@@ -16,7 +16,9 @@ function getfeats(annotations)
     for (points, end_indices, sketch) in annotations[label]
       mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
+      fullidm = extractidm(sketch.points, sketch.end_indices)
       #println(size(idm), size(mid))
+      idm = hcat(idm, fullidm)
       idm = hcat(idm, mid')
       idm = hcat(idm, points[:, 1]'/256)
       idm = hcat(idm, points[:, size(points,2)]'/256)

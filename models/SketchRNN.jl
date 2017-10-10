@@ -2,6 +2,7 @@
 function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
+  println(maxlen)
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
   V = 5
@@ -54,7 +55,10 @@ function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = tru
 end
 
 s2sVAEgrad = grad(s2sVAE)
-function train(model, trndata, trnseqlens, vlddata, vldseqlens, opts, o)
+function train(model, dataset, opts, o)
+  (trndata, trnseqlens) = dataset[:trn]
+  (vlddata, vldseqlens) = dataset[:vld]
+  (tstdata, tstseqlens) = dataset[:tst]
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]

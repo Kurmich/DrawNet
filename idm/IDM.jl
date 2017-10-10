@@ -354,7 +354,9 @@ function extract_avg_idm(points, end_indices; imlen::Int = 24, smooth::Bool = tr
     image = smooth? imfilter(image, gf) : (image)
     avgim += image
   end
-  return avgim/5
+  avgim /= 5
+  feat = reshape(avgim, (1, length(avgim)))
+  return avgim
 end
 
 function get_stroke_images(points, end_indices; imlen::Int = 12, smooth::Bool = true)

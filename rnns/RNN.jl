@@ -18,25 +18,37 @@ function reportmodel(model)
   @printf("Num of mixtures: %d, num of encoder units: %d , num of decoder units: %d, latent vector size: %d \n", M, e_H, d_H, z_size)
 end
 
-function initconsegmenter( o )
+function init_con_segmenter( o )
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
+  numclasses = o[:numclasses]
   model = Dict{Symbol, Any}()
   info("Initializing encoder.")
   initencoder(model, e_H, V, 0)
   info("Encoder was initialized. Initializing predecoder.")
-  initpredecoder(model, e_H, d_H, z_size, imlen)
+  initpredecoder(model, e_H, d_H, z_size, 0)
   info("Predecoder was initialized. Initializing decoder.")
-  initsegdecoder(model, d_H, V, num_mixture, z_size, imlen)
+  initsegdecoder(model, d_H, V, num_mixture, z_size, 0)
   info("Decoder was initialized. Initializing shifts.")
   initshifts(model, e_H, d_H, z_size)
   info("Initialization complete.")
+  init_con_predictor(model, d_H, numclasses)
+  if o[:attn]
+    initattention(model, e_H)
+  end
+  return model
 end
 
 function initsegdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int, imlen::Int)
   #incoming input dims = [batchsize, z_size + V]
-#  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
-  model[:decode] = [ initxav(z_size + V + H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+  #model[:state0] = [initxav(1, H), initzeros(1, H)]
+  model[:embed] = initxav(V + z_size, H) # x = input * model[:embed]; x_dims = [batchsize, H]
+  model[:decode] = [ initxav(H + H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
+end
+
+function init_con_predictor(model, d_H, numclasses)
+  #input dims = [batchsize, H]
+  model[:pred] = [initxav(d_H, numclasses), initzeros(1, numclasses)]
 end
 
 function initsegmenter( o )
@@ -67,6 +79,7 @@ function initattention(model, e_H)
   model[:fwattn] = [initxav(e_H, 1), initzeros(1, 1)]
   model[:bwattn] = [initxav(e_H, 1), initzeros(1, 1)]
 end
+
 
 function initpredictor(model, e_H, numclasses)
   #input dims = [batchsize, H]

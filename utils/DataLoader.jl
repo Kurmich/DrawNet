@@ -14,12 +14,13 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=60, min_seq_length=20, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=100, min_seq_length=5, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
 global const annotp = "../annotateddata/"
 
 function getstrokes(drawing)
+  #=returns all points in a drwing with end_indices as (points, end_indices) tuple=#
   points = Int[]
   end_indices = Int[]
   #starting index of first stroke is 0+1=1
@@ -54,6 +55,7 @@ end
 
 function get_sketch_objects(filename)
   akeys = getannotatedkeys(string(annotp, "airplane1014.ndjson")) #SKIP ANNOTATED ONES
+  #akeys = Dict()
 
   sketch_objects = []
   open(filename, "r") do f
@@ -180,6 +182,8 @@ function indices_to_batch(sketchpoints3D, indices, params::Parameters)
     push!(x_batch, data_copy)
     push!(seqlen, len)
   end
+  max_len = maximum(seqlen)
+  params.max_seq_length = max_len #not to overpad
   x_batch_5D = padbatch(x_batch, params)
   return x_batch, x_batch_5D, seqlen
 end
@@ -257,7 +261,7 @@ else
 end
 export getsketchpoints3D, get_sketch_objects
 export normalize!
-export getbatch, getstrokes
+export getbatch, getstrokes, getsketch
 export splitdata, preprocess
 export Parameters
 end

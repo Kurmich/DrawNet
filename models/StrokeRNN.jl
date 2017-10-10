@@ -3,6 +3,7 @@
 function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
+  println(maxlen)
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
   V = 5
@@ -59,7 +60,7 @@ s2sVAEgrad = grad(s2sVAE)
 function train(model, dataset, opts, o)
   (trndata, trnseqlens) = dataset[:trn]
   (vlddata, vldseqlens) = dataset[:vld]
-  (tstdata, tstseqlens) = dataset[:tst] 
+  (tstdata, tstseqlens) = dataset[:tst]
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]
@@ -130,17 +131,50 @@ function getlabels(sketches, labels, numbatches, params)
   return onehotvecs, instance_per_label
 end
 
-function minibatch(sketchpoints3D, numbatches, params)
-  #=stroke level minibatching=#
-  info("Stroke minibatching")
+function getsketchbatch(x_batch_5D)
+  info("Minibatching")
+  data = []
+  seqlens = []
+  sequence = []
+  for j=1:size(x_batch_5D, 2)
+    points = x_batch_5D[:, j, :]'
+    push!(sequence, points)
+  end
+  push!(data, sequence)
+  push!(seqlens, seqlen)
+end
+
+function sketch_minibatch(sketchpoints3D, numbatches, params)
+  info("Sketch minibatching")
   data = []
   idm_data = []
   seqlens = []
   for i=0:(numbatches-1)
     x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
-    strokeseq, seqlen = getstrokeseqs(x_batch_5D)
-    push!(data, strokeseq)
+    #idm_avg_batch, idm_stroke_batch = get_idm_batch(idmtuples, i, params)
+    sequence = []
+    for j=1:size(x_batch_5D, 2)
+      points = x_batch_5D[:, j, :]'
+      push!(sequence, points)
+    end
+    push!(data, sequence)
     push!(seqlens, seqlen)
+    #push!(idm_data, (idm_avg_batch, idm_stroke_batch))
   end
-  return data, seqlens
+  return data, seqlens#, idm_data
+end
+
+
+function minibatch(sketchpoints3D, numbatches, params)
+  #=stroke level minibatching=#
+  info("Stroke minibatching")
+  stroke_batches = []
+  stroke_seqlens = []
+  for i=0:(numbatches-1)
+    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
+    strokeseq, seqlen = getstrokeseqs(x_batch_5D)
+    push!(stroke_batches, strokeseq)
+    push!(stroke_seqlens, seqlen)
+  end
+  return stroke_batches, stroke_seqlens
 end
