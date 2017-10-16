@@ -16,9 +16,9 @@ function getfeats(annotations)
     for (points, end_indices, sketch) in annotations[label]
       mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
-      fullidm = extractidm(sketch.points, sketch.end_indices)
+      fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
       #println(size(idm), size(mid))
-      idm = hcat(idm, fullidm)
+      #idm = hcat(idm, fullidm)
       idm = hcat(idm, mid')
       idm = hcat(idm, points[:, 1]'/256)
       idm = hcat(idm, points[:, size(points,2)]'/256)
@@ -46,15 +46,6 @@ function getaccuracy(svmmodel, features, ygold)
     end
   end
   return count/length(ypred), correct_count, instance_count
-end
-
-
-function shift_indices!(indices, vldsize)
-  for label in keys(indices)
-    idx = indices[label]
-    up = Int(floor(vldsize*length(idx)))
-    indices[label] = circshift(idx, up)
-  end
 end
 
 
@@ -129,6 +120,8 @@ function trainsvm(trndata, tstdata, C, gamma, labels)
   tstfeats, tstlabels = get_feats_and_classes(tstdata, labels)
   svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
   acc, correct_count, instance_count = getaccuracy(svmmodel, tstfeats, tstlabels)
+  println(correct_count, instance_count)
+  println(correct_count ./ instance_count)
   @printf("best C: %g best gamma: %g tst accuracy: %g \n", C, gamma, acc)
   SVR.savemodel(svmmodel, "airplane.model")
   SVR.freemodel(svmmodel)
@@ -154,6 +147,7 @@ function main(args=ARGS)
   #labels = [ "L", "F", "FP"]
   vldsize = 1/5
   annotations = getannotateddata(filename, labels)
+  annot2pic(filename, labels)
   #=sketches = annotated2sketch_obj(annotations)
   params = Parameters()
   indices = randindinces(sketches)
@@ -164,7 +158,7 @@ function main(args=ARGS)
   vlddata = dict2list(vlddict)
   tstdata = dict2list(tstdict) #as list
   sketchpoints3D, numbatches, sketches = preprocess(trndata, params) =#
-
+#=
   #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations)
@@ -173,9 +167,14 @@ function main(args=ARGS)
   else
     trn_tst_indices = nothing
   end
-  trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-  C, gamma = get_cvd_params(trnidms, o[:cv], labels)
-  trainsvm(trnidms, tstidms, C, gamma, labels)
+  for i=1:o[:cv]
+    println("Fold $(i) is Starting")
+    trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
+    shift_indices!(trn_tst_indices, vldsize)
+    C, gamma = get_cvd_params(trnidms, o[:cv], labels)
+    trainsvm(trnidms, tstidms, C, gamma, labels)
+  end
+=#
 end
 
 if VERSION >= v"0.5.0-dev+7720"

@@ -3,7 +3,6 @@
 function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
-  println(maxlen)
   M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
   V = 5

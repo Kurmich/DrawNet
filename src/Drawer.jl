@@ -378,8 +378,8 @@ function main(args=ARGS)
     filename = string(annotp, o[:filename])
     info("NEEDS NORMALIZATION")
     sketchpoints3D, numbatches, sketches = getdata(o[:filename], params)
-    sketchpoints3D = tstpoints3D
-    DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
+    sketchpoints3D = trnpoints3D
+    #DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
 
     info("Number of sketches = $(length(sketchpoints3D))")
     for i = 1:length(sketchpoints3D)
@@ -394,7 +394,7 @@ function main(args=ARGS)
         s = end_indices[j] + 1
       end
       sketch = stroke_constructsketch(strokes)
-      strokeclasses = getstrokelabels(model, x, lens)
+      strokeclasses = getstrokelabels(model, x, lens; genmodel=genmodel)
       println(strokeclasses)
       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/e$(i).png")
     end

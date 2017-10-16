@@ -18,6 +18,16 @@ function reportmodel(model)
   @printf("Num of mixtures: %d, num of encoder units: %d , num of decoder units: %d, latent vector size: %d \n", M, e_H, d_H, z_size)
 end
 
+
+function initransfer(o)
+  model = Dict{Symbol, Any}()
+  e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
+  numclasses = o[:numclasses]
+  model[:w1] = [initxav(2d_H, d_H), initzeros(1, d_H) ]
+  model[:pred] = [initxav(d_H, numclasses), initzeros(1, numclasses)]
+  return model
+end
+
 function init_con_segmenter( o )
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]

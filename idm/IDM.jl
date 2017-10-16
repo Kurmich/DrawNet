@@ -355,8 +355,13 @@ function extract_avg_idm(points, end_indices; imlen::Int = 24, smooth::Bool = tr
     avgim += image
   end
   avgim /= 5
-  feat = reshape(avgim, (1, length(avgim)))
   return avgim
+end
+
+function get_avg_idmfeat(points, end_indices; imlen::Int = 24, smooth::Bool = true)
+  avgim = extract_avg_idm(points, end_indices; imlen=imlen, smooth=smooth)
+  feat = reshape(avgim, (1, length(avgim)))
+  return feat
 end
 
 function get_stroke_images(points, end_indices; imlen::Int = 12, smooth::Bool = true)
@@ -485,5 +490,5 @@ end
 
 export get_im_stds, get_idm_objects, get_idm_batch
 export IdmTuple, save_idmtuples, load_idmtuples
-export idm_indices_to_batch, saveidm, extractidm
+export idm_indices_to_batch, saveidm, extractidm, get_avg_idmfeat
 end
