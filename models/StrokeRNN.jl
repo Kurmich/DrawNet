@@ -3,9 +3,10 @@
 function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = true, dprob = 0)
   #model settings
   maxlen = maximum(seqlen) #maximum length of the input sequence
-  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
   (batchsize, V) = size(data[1])
-  V = 5
+  M = Int((size(model[:output][1], 2)-(V-2))/6) #number of mixtures
+  #V = 5
+  #println(V)
   d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
   h = encode(model, data, maxlen, batchsize; dprob=dprob)
@@ -32,14 +33,14 @@ function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = tru
     end
     state = lstm(model[:decode], state, input; alpha=alpha, beta=beta, dprob=dprob)
     output =  predict(model[:output], state[1]) #get output params
-    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M) #get mixtur parameters and normalized logit values
+    pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qlognorm = get_mixparams(output, M, V) #get mixtur parameters and normalized logit values
     mix_probs = pnorm .* vec_bivariate_prob(data[i][:, 1], data[i][:, 2], mu_x, mu_y, sigma_x, sigma_y, rho) #weighted probabilities of mixtures
     mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
     offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
     if istraining
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm) #L_p on paper
+      penstate_loss += -sum(data[i][:, 3:V] .* qlognorm) #L_p on paper
     else
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm .* mask) #L_p on paper
+      penstate_loss += -sum(data[i][:, 3:V] .* qlognorm .* mask) #L_p on paper
     end
   end
   offset_loss /= (maxlen * batchsize)
@@ -50,6 +51,7 @@ function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = tru
   else
     return penstate_loss, offset_loss, kl_loss
   end
+  #println("$(AutoGrad.getval(offset_loss)) $(AutoGrad.getval(penstate_loss)) $(AutoGrad.getval(kl_loss))")
   loss = offset_loss + penstate_loss + wkl*kl_loss
   return loss
 end
@@ -64,15 +66,13 @@ function train(model, dataset, opts, o)
   best_vld_cost = 100000
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
-      for j = 1:length(trndata[i])
-        cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
-        cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
-        x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i][j], cur_wkl,; dprob=o[:dprob])
-        updatelr!(opts, cur_lr)
-        update!(model, grads, opts)
-        step += 1
-      end
+      cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+      cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
+      x = perturb(trndata[i]; scalefactor=o[:scalefactor])
+      grads = s2sVAEgrad(model, map(a->convert(atype, a), x), trnseqlens[i], cur_wkl; dprob=o[:dprob])
+      updatelr!(opts, cur_lr)
+      update!(model, grads, opts)
+      step += 1
     end
     (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
     #save the best model
@@ -98,12 +98,10 @@ function evaluatemodel(model, data, seqlens, wkl)
   rec_loss, kl_loss = 0, 0
   count = 0
   for i = 1:length(data)
-    for j = 1:length(data[i])
-      penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], wkl; istraining = false)
-      rec_loss += (penstate_loss + offset_loss)
-      kl_loss += cur_kl_loss
-      count += 1
-    end
+    penstate_loss, offset_loss, cur_kl_loss = s2sVAE(model, map(a->convert(atype, a), data[i]), seqlens[i], wkl; istraining = false)
+    rec_loss += (penstate_loss + offset_loss)
+    kl_loss += cur_kl_loss
+    count += 1
   end
   return rec_loss/count, kl_loss/count
 end
@@ -143,13 +141,14 @@ function getsketchbatch(x_batch_5D)
   push!(seqlens, seqlen)
 end
 
-function sketch_minibatch(sketchpoints3D, numbatches, params)
+function sketch_minibatch(sketchpoints3D, numbatches, V, params)
   info("Sketch minibatching")
   data = []
-  idm_data = []
+  #idm_data = []
   seqlens = []
+  V = 5
   for i=0:(numbatches-1)
-    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
+    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, V, params)
     #idm_avg_batch, idm_stroke_batch = get_idm_batch(idmtuples, i, params)
     sequence = []
     for j=1:size(x_batch_5D, 2)
@@ -164,16 +163,19 @@ function sketch_minibatch(sketchpoints3D, numbatches, params)
 end
 
 
-function minibatch(sketchpoints3D, numbatches, params)
+function minibatch(sketchpoints3D, V, params)
   #=stroke level minibatching=#
   info("Stroke minibatching")
+  batch_count = div(length(sketchpoints3D), params.batchsize)
+  params.numbatches = batch_count
   stroke_batches = []
   stroke_seqlens = []
-  for i=0:(numbatches-1)
-    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, params)
+  for i=0:(batch_count-1)
+    #x_batch, x_batch_4D, seqlen = getbatch(sketchpoints3D, i, V, params)
+    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, V, params)
     strokeseq, seqlen = getstrokeseqs(x_batch_5D)
-    push!(stroke_batches, strokeseq)
-    push!(stroke_seqlens, seqlen)
+    append!(stroke_batches, strokeseq)
+    append!(stroke_seqlens, seqlen)
   end
   return stroke_batches, stroke_seqlens
 end

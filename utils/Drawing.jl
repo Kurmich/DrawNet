@@ -10,8 +10,31 @@ type Sketch
 end
 
 
+function get_3d_strokes(sketch::Sketch)
+  #= Convert polyline format to 3-stroke format.=#
+  strokes = []
+  pen_state = zeros(1, size(sketch.points, 2))
+  #set end points states to 1 discard initial 0
+  pen_state[sketch.end_indices[2:end]] = 1
+  #points = hcat([0; 0; 0], vcat(sketch.points, pen_state))
+  points = vcat(sketch.points, pen_state)
+
+  for strokenum=1:(length(sketch.end_indices)-1) #POINTS HAS NEW POINT ADDED SOMETHING WRONG WITH INDICES
+    start_ind = sketch.end_indices[strokenum]+1 #ALSO HOW DO WE MAKE STARTING POINTS? HERE ARE INDEXING PROBLEMS
+    end_ind = sketch.end_indices[strokenum+1]
+    cur_points = points[ :, start_ind:end_ind] #get current stroke
+    cur_points = hcat([0; 0; 0], cur_points) #pad initial zeros
+    len = size(cur_points, 2)
+    cur_points[1:2, 2:len] -= cur_points[1:2, 1:len-1] #compute (deta_x, delta_y)'s of current stroke
+    push!(strokes, cur_points[:, 2:len])
+  end
+
+  return strokes
+end
+
 function stroke_points_to_3d(sketch::Sketch)
   #= Convert polyline format to 3-stroke format.=#
+  strokes = []
   pen_state = zeros(1, size(sketch.points, 2))
   #set end points states to 1 discard initial 0
   pen_state[sketch.end_indices[2:end]] = 1
@@ -31,6 +54,7 @@ function stroke_points_to_3d(sketch::Sketch)
     else
       result = hcat(result, cur_points[:, 2:len])
     end
+    push!(strokes, cur_points[:, 2:len])
   end
   #discard first entry
   #printpoints(points[:, 2:len])
@@ -50,6 +74,21 @@ function points_to_3d(sketch::Sketch)
   #discard first entry
   #printpoints(points[:, 2:len])
   return points[:, 2:len]
+end
+
+function to_4d_points(points; max_len=250)
+  len = size(points, 2)
+  rows = size(points, 1)
+  @assert(rows == 3 && len <= max_len)
+  result = zeros(4, max_len)
+  result[1:2, 1:len] = points[1:2, :]
+  #set state p2
+  #result[4, 1:len] = points[3, :]
+  #set state p1
+  result[3, 1:len] = 1 #- result[4, 1:len]
+  #set state p2
+  result[4, len+1:max_len] = 1
+  return result
 end
 
 function to_big_points(points; max_len=250)
@@ -74,6 +113,7 @@ end
 function isendstroke(p, i)
   return Int(floor(p[1, i])) == 0 && Int(floor(p[2, i])) == 0 && Int(p[3, i]) == 0 && Int(p[4, i]) == 1 && Int(p[5, i]) == 0
 end
+
 
 function stroke_clean_points(points; factor::Int=100)
   #=Cut irrelevant end points, scale to pixel space and store as integer.=#
@@ -110,9 +150,51 @@ function stroke_clean_points(points; factor::Int=100)
 end
 
 function clean_points(points; factor::Int=100)
-  #=Cut irrelevant end points, scale to pixel space and store as integer.=#
   len = size(points, 2)
   rows = size(points, 1)
+  if rows == 4
+    return clean_points_4d(points, len, rows; factor=factor)
+  elseif rows == 5
+    return clean_points_5d(points, len, rows; factor=factor)
+  else
+    Error("vocab size must be 4 or 5")
+  end
+
+end
+
+function clean_points_4d(points, len, rows; factor::Int=100)
+  #=Cut irrelevant end points, scale to pixel space and store as integer.=#
+  @assert(rows == 4)
+  copy_points = nothing
+  added_final = false
+  #printpoints(points)
+  #iterate through all points
+  for i=1:len
+    finish_flag = Int(points[4, i])
+    if finish_flag == 0
+      x = Int(floor(points[1, i]*factor))
+      y = Int(floor(points[2, i]*factor))
+      p1 = Int(points[3, i])
+      if copy_points == nothing
+        copy_points = [x; y; p1; finish_flag]
+      else
+        copy_points = hcat(copy_points, [x; y; p1; finish_flag])
+      end
+    else
+      copy_points = hcat(copy_points, [0; 0; 0; 1])
+      added_final = true
+      break
+    end
+  end
+  if !added_final
+    copy_points = hcat(copy_points, [0; 0; 0; 1])
+  end
+  #printpoints(copy_points)
+  return copy_points
+end
+
+function clean_points_5d(points, len, rows; factor::Int=100)
+  #=Cut irrelevant end points, scale to pixel space and store as integer.=#
   @assert(rows == 5)
   copy_points = nothing
   added_final = false
@@ -255,7 +337,7 @@ export printcontents, printpoints
 export addstroke!
 export plotsketch, saveslabeled
 export savesketch
-export points_to_3d
-export to_big_points
+export points_to_3d, get_3d_strokes
+export to_big_points, to_4d_points
 export clean_points, stroke_clean_points, stroke_points_to_3d
 end

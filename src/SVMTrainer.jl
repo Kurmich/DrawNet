@@ -18,7 +18,7 @@ function getfeats(annotations)
       idm = extractidm(points, end_indices)
       fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
       #println(size(idm), size(mid))
-      #idm = hcat(idm, fullidm)
+      idm = hcat(idm, fullidm)
       idm = hcat(idm, mid')
       idm = hcat(idm, points[:, 1]'/256)
       idm = hcat(idm, points[:, size(points,2)]'/256)
@@ -143,11 +143,12 @@ function main(args=ARGS)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
   filename = string(o[:datapath], o[:filename])
-  labels = [  "W", "B", "T" ,"WNDW", "FA"]
+  #labels = [  "W", "B", "T" ,"WNDW", "FA"]
+  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
   #labels = [ "L", "F", "FP"]
   vldsize = 1/5
   annotations = getannotateddata(filename, labels)
-  annot2pic(filename, labels)
+  #annot2pic(filename, labels)
   #=sketches = annotated2sketch_obj(annotations)
   params = Parameters()
   indices = randindinces(sketches)
@@ -158,23 +159,23 @@ function main(args=ARGS)
   vlddata = dict2list(vlddict)
   tstdata = dict2list(tstdict) #as list
   sketchpoints3D, numbatches, sketches = preprocess(trndata, params) =#
-#=
+
   #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations)
   if o[:readydata]
-    trn_tst_indices = load("trn_tst_indices.jld")["indices"]
+    trn_tst_indices = load("cat500trn_tst_indices.jld")["indices"] #CHANGE THIS FILENAME
   else
     trn_tst_indices = nothing
   end
   for i=1:o[:cv]
     println("Fold $(i) is Starting")
     trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-    shift_indices!(trn_tst_indices, vldsize)
     C, gamma = get_cvd_params(trnidms, o[:cv], labels)
     trainsvm(trnidms, tstidms, C, gamma, labels)
+    shift_indices!(trn_tst_indices, vldsize)
   end
-=#
+
 end
 
 if VERSION >= v"0.5.0-dev+7720"

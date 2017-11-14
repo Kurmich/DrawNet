@@ -37,9 +37,9 @@ function s2sVAE(model, data, seqlen, wkl; epsilon = 1e-6, istraining::Bool = tru
     mask = 1 .- data[i][:, V] #mask to zero out all terms beyond actual N_s the last actual stroke
     offset_loss += -sum( log( sum(mix_probs, 2).+ epsilon ) .* mask ) #L_s on paper(add epsilon to avoid log(0))
     if istraining
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm) #L_p on paper
+      penstate_loss += -sum(data[i][:, 3:V] .* qlognorm) #L_p on paper
     else
-      penstate_loss += -sum(data[i][:, (V-2):V] .* qlognorm .* mask) #L_p on paper
+      penstate_loss += -sum(data[i][:, 3:V] .* qlognorm .* mask) #L_p on paper
     end
   end
   offset_loss /= (maxlen * batchsize)

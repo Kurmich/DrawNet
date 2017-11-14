@@ -14,7 +14,7 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=100, min_seq_length=5, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=90, min_seq_length=5, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
 global const annotp = "../annotateddata/"
@@ -54,7 +54,8 @@ function getsketch(sketch_as_dict::Dict)
 end
 
 function get_sketch_objects(filename)
-  akeys = getannotatedkeys(string(annotp, "airplane1014.ndjson")) #SKIP ANNOTATED ONES
+  println("will skip annotated files")
+  akeys = getannotatedkeys(string(annotp, "cat200.ndjson")) #SKIP ANNOTATED ONES
   #akeys = Dict()
 
   sketch_objects = []
@@ -64,7 +65,7 @@ function get_sketch_objects(filename)
        sketch_as_text = readline(f)  # file information to string
        sketch_as_dict = JSON.parse(sketch_as_text)  # parse and transform data
        if haskey(akeys, sketch_as_dict["key_id"])
-        # info("skipping")
+         info("skipping")
          continue #SKIP ANNOTATED ONES
        end
        sketch = getsketch(sketch_as_dict)
@@ -83,6 +84,58 @@ function getmaxlen(sketch_objects)
     maxlen = max(maxlen, size(sketch.points, 2))
   end
   return maxlen
+end
+
+function preprocess_strokes(sketch_objects, params::Parameters)
+  #=Remove sketches having > max_seq_length points or < min_seq_length=#
+  rawstrokes = []
+  seqlen = Int[]
+  strokepoints3D = []
+  filtered_sketches = []
+  countdata = 0
+  for sketch in sketch_objects
+    strokes = get_3d_strokes(sketch) #HERE STROKE POINTS
+    #prep each stroke of the sketch
+    for stroke in strokes
+      countdata += 1
+      len = size(stroke, 2)
+      if len > 50
+        continue
+      end
+      #remove large gaps from data?
+      stroke[1:2, :] /= params.scalefactor
+      push!(rawstrokes, stroke)
+      #add stroke for corresponding sketch
+      push!(filtered_sketches, sketch)
+      push!(seqlen, len)
+    end
+  end
+  #sorted order according to sequence lengths
+  idx = sortperm(seqlen)
+  sketches = []
+  for i=1:length(seqlen)
+  #  push!(strokepoints3D, rawstrokes[idx[i]])
+  #  push!(sketches, filtered_sketches[idx[i]])
+  end
+  println("Total images <= max_seq_length($(params.max_seq_length)) is $(countdata)")
+  params.numbatches = div(countdata, params.batchsize)
+  #=returns in stroke-3 format=#
+  return rawstrokes, params.numbatches, filtered_sketches
+end
+
+function getstrokedata(filename = "full_simplified_airplane.ndjson"; params::Parameters=Parameters())
+  strokedata = Dict()
+  filepath = "$datapath$filename"
+  println("Retrieving sketches from $(filepath) file")
+  sketches = get_sketch_objects(filepath)
+  trnidx, vldidx, tstidx = splitdata(sketches)
+  println("Retrieving 3D strokes from sketches")
+  strokedata[:trn] = preprocess_strokes(sketches[trnidx], params) #returns trn_strokes3D, trn_numbatches, trn_sketches
+  strokedata[:vld] = preprocess_strokes(sketches[vldidx], params) #returns vld_strokes3D, vld_numbatches, vld_sketches
+  strokedata[:tst] = preprocess_strokes(sketches[tstidx], params) #return tst_strokes3D, tst_numbatches, tst_sketches
+  strokedata[:idx] = (trnidx, vldidx, tstidx)
+  strokedata[:sketches] = sketches
+  return strokedata
 end
 
 function preprocess(sketch_objects, params::Parameters)
@@ -109,13 +162,13 @@ function preprocess(sketch_objects, params::Parameters)
   idx = sortperm(seqlen)
   sketches = []
   for i=1:length(seqlen)
-    push!(sketchpoints3D, rawpoints[idx[i]])
-    push!(sketches, filtered_sketches[idx[i]])
+  #  push!(sketchpoints3D, rawpoints[idx[i]])
+  #  push!(sketches, filtered_sketches[idx[i]])
   end
   println("total images <= max_seq_length($(params.max_seq_length)) is $(countdata)")
   params.numbatches = div(countdata, params.batchsize)
   #=returns in stroke-3 format=#
-  return sketchpoints3D, params.numbatches, sketches
+  return rawpoints, params.numbatches, filtered_sketches
 end
 
 function get_scalefactor(sketchpoints3D; max_seq_length::Int=250)
@@ -129,6 +182,12 @@ function get_scalefactor(sketchpoints3D; max_seq_length::Int=250)
     end
   end
   return std(data)
+end
+
+
+function isnormalized(sketchpoints3D)
+  stdev = get_scalefactor(sketchpoints3D)
+  return 0.97 <= stdev && stdev <= 1.03
 end
 
 function normalize!(sketchpoints3D, params::Parameters; scalefactor = nothing)
@@ -151,6 +210,24 @@ function restore(sketchpoints3D, scalefactor = nothing)
 end
 
 
+function padbatch_4d(batch, params::Parameters)
+  max_len = params.max_seq_length
+  result = zeros(4, max_len + 1, length(batch))
+  #@assert(length(batch)==params.batchsize)
+  for i=1:length(batch)
+    len = size(batch[i], 2)
+    @assert(len <= max_len)
+    result[:, 2:max_len+1, i] = to_4d_points(batch[i]; max_len = max_len)
+    #put in the first token, as described in sketch-rnn methodology
+    result[1, 1, i] = 0
+    result[2, 1, i] = 0
+    result[3, 1, i] = 1
+    result[4, 1, i] = 0
+  #  printpoints(result[:, :, i])
+  end
+  return result
+end
+
 function padbatch(batch, params::Parameters)
   max_len = params.max_seq_length
   result = zeros(5, max_len + 1, length(batch))
@@ -169,7 +246,7 @@ function padbatch(batch, params::Parameters)
   return result
 end
 
-function indices_to_batch(sketchpoints3D, indices, params::Parameters)
+function indices_to_batch(sketchpoints3D, indices, V, params::Parameters)
   x_batch = []
   seqlen = Int[]
   for idx=indices
@@ -183,27 +260,37 @@ function indices_to_batch(sketchpoints3D, indices, params::Parameters)
     push!(seqlen, len)
   end
   max_len = maximum(seqlen)
-  params.max_seq_length = max_len #not to overpad
-  x_batch_5D = padbatch(x_batch, params)
+  params.max_seq_length = max_len + 1 #not to overpad
+  if V == 4
+    x_batch_5D = padbatch_4d(x_batch, params)
+  else
+    x_batch_5D = padbatch(x_batch, params)
+  end
+
   return x_batch, x_batch_5D, seqlen
 end
 
-function getbatch(sketchpoints3D, idx, params::Parameters)
+function getbatch(sketchpoints3D, idx, V, params::Parameters)
   @assert(idx >= 0, "index must be nonnegative")
   @assert(idx < params.numbatches, "index must be less number of batches")
   start_ind = idx * params.batchsize
   end_ind = min((start_ind + params.batchsize), length(sketchpoints3D))
   indices = (start_ind + 1) : end_ind
-  return indices_to_batch(sketchpoints3D, indices, params)
+  return indices_to_batch(sketchpoints3D, indices, V, params)
 end
 
 function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params::Parameters=Parameters())
+  data = Dict()
   filepath = "$datapath$filename"
   info("Retrieving sketches from $(filepath) file")
   sketches = get_sketch_objects(filepath)
+  trnidx, vldidx, tstidx = splitdata(sketches)
   info("Retrieving 3D points from sketches")
-  sketchpoints3D, numbatches, sketches = preprocess(sketches, params)
-  return sketchpoints3D, numbatches, sketches
+  data[:trn] = preprocess(sketches[trnidx], params) #trn_sketchpoints3D, trn_numbatches, trn_sketches
+  data[:vld] = preprocess(sketches[vldidx], params) #vld_sketchpoints3D, vld_numbatches, vld_sketches
+  data[:tst] = preprocess(sketches[tstidx], params) #tst_sketchpoints3D, tst_numbatches, tst_sketches
+  data[:idx] = (trnidx, vldidx, tstidx)
+  return data
 end
 
 #splits data to train, validation and test sets
@@ -260,8 +347,8 @@ else
     !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
 end
 export getsketchpoints3D, get_sketch_objects
-export normalize!
-export getbatch, getstrokes, getsketch
+export normalize!, isnormalized
+export getbatch, getstrokes, getsketch, getstrokedata
 export splitdata, preprocess
 export Parameters
 end

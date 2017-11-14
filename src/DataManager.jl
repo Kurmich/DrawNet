@@ -104,9 +104,10 @@ function getannotateddata(filename, labels)
 end
 
 function annot2pic(filename, labels)
+  #gets annotations and saves them to images
   classnames = copy(labels)
   i = 1
-  push!(classnames, "No Label") 
+  push!(classnames, "No Label")
   open(filename, "r") do f
      while !eof(f)
        text_data = readline(f)  # file information to string

@@ -10,8 +10,8 @@ initrandn(winit=0.0001, d...) = atype(winit*randn(d...))
 
 
 
-function reportmodel(model)
-  M = Int((size(model[:output][1], 2)-3)/6) #number of mixtures
+function reportmodel(model, o)
+  M = Int((size(model[:output][1], 2) - (o[:V]-2) )/6) #number of mixtures
   d_H = size(model[:output][1], 1) #decoder hidden unit size
   e_H = size(model[:fw_state0][2], 2)
   z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
@@ -23,8 +23,10 @@ function initransfer(o)
   model = Dict{Symbol, Any}()
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   numclasses = o[:numclasses]
-  model[:w1] = [initxav(2d_H, d_H), initzeros(1, d_H) ]
-  model[:pred] = [initxav(d_H, numclasses), initzeros(1, numclasses)]
+  z_size = o[:z_size]
+  model[:w1] = [initxav(4d_H, 2d_H), initzeros(1, 2d_H) ]
+  model[:w2] = [initxav(2d_H, 2d_H), initzeros(1, 2d_H) ]
+  model[:pred] = [initxav(2d_H, numclasses), initzeros(1, numclasses)]
   return model
 end
 
@@ -94,6 +96,20 @@ end
 function initpredictor(model, e_H, numclasses)
   #input dims = [batchsize, H]
   model[:pred] = [initxav(2e_H, numclasses), initzeros(1, numclasses)]
+end
+
+
+function initcontextmodel( o )
+  e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
+  V, z_size, num_mixture = o[:V], o[:z_size], o[:num_mixture]
+  imlen = 0
+  model = Dict{Symbol, Any}()
+  initencoder(model, e_H, V, imlen)
+  model[:fw_output] = [ initxav(e_H, 6num_mixture + V - 2 ), initzeros(1, 6num_mixture + V - 2 ) ]
+  model[:bw_output] = [ initxav(e_H, 6num_mixture + V - 2 ), initzeros(1, 6num_mixture + V - 2 ) ]
+  model[:fw_shifts] = getshifts(e_H)
+  model[:bw_shifts] = getshifts(e_H)
+  return model
 end
 
 #=
@@ -176,7 +192,7 @@ function initdecoder(model, H::Int, V::Int, num_mixture::Int, z_size::Int, imlen
   #incoming input dims = [batchsize, z_size + V]
 #  model[:embed] = initxav(z_size + V, H) # x = input * model[:embed]; x_dims = [batchsize, H]
   model[:decode] = [ initxav(z_size + V + H, 4H), initzeros(1, 4H) ] #lstm_outdims = [batchsize, H]
-  model[:output] = [ initxav(H, 6num_mixture + 3 ), initzeros(1, 6num_mixture + 3 ) ] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
+  model[:output] = [ initxav(H, 6num_mixture + V - 2 ), initzeros(1, 6num_mixture + V - 2 ) ] #output = lstm_out * W_output .+ b_output -> dims = [batchsize, 6*num_mixture + 3]
 end
 
 
