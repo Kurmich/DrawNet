@@ -107,11 +107,14 @@ function evaluatemodel(model, data, seqlens, wkl)
 end
 
 
-function getlabels(sketches, labels, numbatches, params)
+function getlabels(sketches, labels, params)
+  batch_count = div(length(sketches), params.batchsize)
+  params.numbatches = batch_count
+
   numlabels = length(labels) #number of classes
   instance_per_label = zeros(1, numlabels)
   onehotvecs = []
-  for idx=0:(numbatches-1)
+  for idx=0:(batch_count-1)
     start_ind = idx * params.batchsize
     end_ind = min( (start_ind + params.batchsize), length(sketches))
     indices = (start_ind + 1) : end_ind
@@ -141,13 +144,15 @@ function getsketchbatch(x_batch_5D)
   push!(seqlens, seqlen)
 end
 
-function sketch_minibatch(sketchpoints3D, numbatches, V, params)
+function sketch_minibatch(sketchpoints3D, V, params)
   info("Sketch minibatching")
+  batch_count = div(length(sketchpoints3D), params.batchsize)
+  params.numbatches = batch_count
   data = []
   #idm_data = []
   seqlens = []
   V = 5
-  for i=0:(numbatches-1)
+  for i=0:(batch_count-1)
     x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, V, params)
     #idm_avg_batch, idm_stroke_batch = get_idm_batch(idmtuples, i, params)
     sequence = []

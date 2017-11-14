@@ -495,26 +495,24 @@ function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fu
   ygold = map(a->convert(atype, a), ygold)
   count = 0.0
   for i = 1:length(data)
-    for j = 1:length(data[i])
-      if o[:hascontext]
-        #d_H = size(genmodel[:output][1], 1)
-        x = map(a->convert(atype, a), data[i][j])
-        xfull = map(a->convert(atype, a), f_data[i])
-        #z = getlatentvector(genmodel, x)
-        #=x = map(a->convert(atype, a), data[i][j])
-        f_x = map(a->convert(atype, a), f_data[i])
-        z = getlatentvector(genmodel, f_x)
-        x = appendlatentvec(x, z)=#
-        #curloss, ypred = classify(model, x, seqlens[i][j], ygold[i], o; istraining=false, z = z, weights=weights)
-        #f_x = map(a->convert(atype, a), f_data[i])
-        curloss, ypred = transclassify(model, genmodel, x, seqlens[i][j], ygold[i], o; istraining = false, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_seqlens[i])
-      else
-        curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i], o; istraining=false, weights=weights)
-      end
-      correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
-      loss += curloss
-      count += size(ygold[i], 1) #CHECK
+    if o[:hascontext]
+      #d_H = size(genmodel[:output][1], 1)
+      x = map(a->convert(atype, a), data[i])
+      xfull = map(a->convert(atype, a), f_data[i])
+      #z = getlatentvector(genmodel, x)
+      #=x = map(a->convert(atype, a), data[i][j])
+      f_x = map(a->convert(atype, a), f_data[i])
+      z = getlatentvector(genmodel, f_x)
+      x = appendlatentvec(x, z)=#
+      #curloss, ypred = classify(model, x, seqlens[i][j], ygold[i], o; istraining=false, z = z, weights=weights)
+      #f_x = map(a->convert(atype, a), f_data[i])
+      curloss, ypred = transclassify(model, genmodel, x, seqlens[i], ygold[i], o; istraining = false, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_seqlens[i])
+    else
+      curloss, ypred = classify(model, map(a->convert(atype, a), data[i]), seqlens[i], ygold[i], o; istraining=false, weights=weights)
     end
+    correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
+    loss += curloss
+    count += size(ygold[i], 1) #CHECK
   end
   return loss/count, correct_count, instance_count
 end
@@ -549,41 +547,38 @@ function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = not
 
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
-      for j = 1:length(trndata[i])
-        @assert(length(trndata[i]) == 1)
-        cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
-        cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
-        x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        xfull = perturb(f_trndata[i]; scalefactor=o[:scalefactor])
-        if o[:hascontext]
-          #d_H = size(genmodel[:output][1], 1)
-          #x = map(a->convert(atype, a), x)
-          #z = getlatentvector(genmodel, x)
-          #=x = map(a->convert(atype, a), x)
-          f_x = map(a->convert(atype, a), f_trndata[i])
-          z = getlatentvector(genmodel, f_x)
-          x = appendlatentvec(x, z)=#
-          #grads = gradloss(model, x, trnseqlens[i][j], trngold[i], o; weights=weights, z=z)
-          #f_x = map(a->convert(atype, a), f_trndata[i])
-          x = map(a->convert(atype, a), x)
-          xfull = map(a->convert(atype, a), xfull)
-          grads = gradtrans(model, genmodel, x, trnseqlens[i][j], trngold[i], o; istraining = true, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_trnseqlens[i])
-        else
-          grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i][j], trngold[i], o; weights=weights)
-        end
-        updatelr!(opts, cur_lr)
-        update!(model, grads, opts)
-        step += 1
-        #=vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
-        #save the best model
-        if vld_loss < best_vld_cost
-          best_vld_cost = vld_loss
-          arrmodel = convertmodel(model)
-          println("Step: $(step) saving best model to $(pretrnp)$(o[:bestmodel])")
-          save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
-          @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
-        end=#
+      cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
+      cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
+      x = perturb(trndata[i]; scalefactor=o[:scalefactor])
+      xfull = perturb(f_trndata[i]; scalefactor=o[:scalefactor])
+      if o[:hascontext]
+        #d_H = size(genmodel[:output][1], 1)
+        #x = map(a->convert(atype, a), x)
+        #z = getlatentvector(genmodel, x)
+        #=x = map(a->convert(atype, a), x)
+        f_x = map(a->convert(atype, a), f_trndata[i])
+        z = getlatentvector(genmodel, f_x)
+        x = appendlatentvec(x, z)=#
+        #grads = gradloss(model, x, trnseqlens[i][j], trngold[i], o; weights=weights, z=z)
+        #f_x = map(a->convert(atype, a), f_trndata[i])
+        x = map(a->convert(atype, a), x)
+        xfull = map(a->convert(atype, a), xfull)
+        grads = gradtrans(model, genmodel, x, trnseqlens[i], trngold[i], o; istraining = true, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_trnseqlens[i])
+      else
+        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i], trngold[i], o; weights=weights)
       end
+      updatelr!(opts, cur_lr)
+      update!(model, grads, opts)
+      step += 1
+      #=vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
+      #save the best model
+      if vld_loss < best_vld_cost
+        best_vld_cost = vld_loss
+        arrmodel = convertmodel(model)
+        println("Step: $(step) saving best model to $(pretrnp)$(o[:bestmodel])")
+        save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
+        @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
+      end=#
     end
     vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights)
     #save the best model
@@ -804,23 +799,20 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
-function makebatches(sketches, points3D, f_points3D, labels, params; full::Bool = false)
+function makebatches(sketches, points3D, f_points3D, labels, V, params; full::Bool = false)
   #=creates batches of annotated data=#
-  batch_count = Int(ceil(length(points3D)/params.batchsize))
-  params.numbatches = batch_count
-  f_data, f_seqlens =  sketch_minibatch(f_points3D, batch_count, params)
-  data, seqlens = minibatch(points3D, batch_count, params)
-  #f_data, f_seqlens = data, seqlens #AD HOC
-  ygolds, instance_per_label = getlabels(sketches, labels, batch_count, params)
+  f_data, f_seqlens =  sketch_minibatch(f_points3D, V, params)
+  data, seqlens = minibatch(points3D, V, params)
+  ygolds, instance_per_label = getlabels(sketches, labels, params)
   @assert(length(ygolds) == length(data))
   return (data, seqlens, ygolds, instance_per_label, f_data, f_seqlens)
 end
 
-function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, params)
+function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, V, params)
   dataset = Dict()
-  dataset[:trn] = makebatches(trnsketches, trnpoints3D, f_trnpoints3D, labels, params)
-  dataset[:vld] = makebatches(vldsketches, vldpoints3D, f_vldpoints3D, labels, params)
-  dataset[:tst] = makebatches(tstsketches, tstpoints3D, f_tstpoints3D, labels, params)
+  dataset[:trn] = makebatches(trnsketches, trnpoints3D, f_trnpoints3D, labels, V, params)
+  dataset[:vld] = makebatches(vldsketches, vldpoints3D, f_vldpoints3D, labels, V, params)
+  dataset[:tst] = makebatches(tstsketches, tstpoints3D, f_tstpoints3D, labels, V, params)
   return dataset
 end
 
@@ -862,7 +854,9 @@ function get_gen_data(o, params)
   return dataset
 end
 
-function makesplit(sketches, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing, rawname = "cat500")
+function makesplit(sketches, labels, o; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
+  rawname = split(o[:a_filename], ".")[1]
+  vldsize = 1 / o[:cvfolds]
   if trn_tst_indices == nothing
     trn_tst_indices = randindinces(sketches)
     trndict, tstdict = train_test_split(sketches, vldsize; indices = trn_tst_indices) #get even split as dictionary
@@ -891,19 +885,19 @@ function makesplit(sketches, labels, vldsize; trn_tst_indices = nothing, trn_vld
   return trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices
 end
 
-function get_seg_data(filename, labels, vldsize; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
+function get_seg_data(o, labels; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
   #=Create dataset for segmentation model=#
-  filename = string(annotp, filename)
-  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
 
+  filename = string(annotp, o[:a_filename])
+  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   annotations = getannotateddata(filename, labels)
   sketches, full_sketches = annotated2sketch_obj(annotations)
   for (key, value) in sketches
       println(key, " ==> ", length(value))
   end
-  trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices = makesplit(sketches, labels, vldsize; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
-  f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, f_trn_tst_indices, f_trn_vld_indices = makesplit(full_sketches, labels, vldsize; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
-  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, params)
+  trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices = makesplit(sketches, labels, o; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
+  f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, f_trn_tst_indices, f_trn_vld_indices = makesplit(full_sketches, labels, o; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
+  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, o[:V], params)
   @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(f_trnsketches))
   @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(f_vldpoints3D))
   return dataset, trn_tst_indices, trn_vld_indices
@@ -927,7 +921,7 @@ function rnncv(o)
   smooth = true
   rawname = split(o[:a_filename], ".")[1]
   if !o[:readydata]
-    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; params=params)
+    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; params=params)
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
     trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"]
@@ -939,10 +933,10 @@ function rnncv(o)
   genmodel = nothing
   fullgenmodel = nothing
   if o[:hascontext]
-    println("Loading context model. ", o[:model])
+    println("Loading context model from $(pretrnp)$(o[:model])")
     w = load("$(pretrnp)$(o[:model])")
     genmodel = revconvertmodel(w["model"])
-    println("Loading full context model.")
+    println("Loading full context model from $(pretrnp)$(o[:fullmodel])")
     w = load("$(pretrnp)$(o[:fullmodel])")
     fullgenmodel = revconvertmodel(w["model"])
   else
@@ -955,9 +949,9 @@ function rnncv(o)
       println("Fold $(i) is Starting")
       segment(model, dataset, optim, o; genmodel=genmodel)
       shift_indices!(trn_tst_indices, vldsize)
-      model = initsegmenter(o)
+      model = initransfer(o)
       optim = initoptim(model, o[:optimization])
-      dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, params=params)
+      dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; trn_tst_indices=trn_tst_indices, params=params)
     end
   else
     println("Fold $(o[:fold])")
@@ -966,7 +960,7 @@ function rnncv(o)
       shift_indices!(trn_tst_indices, vldsize)
     end
     params.max_seq_length = 200
-    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
+    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
     segment(model, dataset, optim, o; genmodel=genmodel, fullgenmodel=fullgenmodel)
   end
 end
@@ -978,7 +972,8 @@ function segmentation_mode(o)
   global const kl_tolerance = o[:kl_tolerance]
   #labels = [ "L", "F", "FP"]
   #labels = ["W", "B", "T", "WNDW", "FA"]
-  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #Labels for cat
+  #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #labels for firetruck
   o[:numclasses] = length(labels)
   model = initransfer(o)
   params = Parameters()
@@ -989,12 +984,12 @@ function segmentation_mode(o)
   smooth = true
   rawname = split(o[:a_filename], ".")[1]
   if !o[:readydata]
-    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; params=params)
+    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; params=params)
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
     trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"]
     trn_vld_indices = load("$(rawname)trn_vld_indices.jld")["indices"]
-    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
+    dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
   end
 
   println("Starting training")
@@ -1064,9 +1059,8 @@ end
 
 function reportparams( o )
   println("Has Attention: $(o[:attn]); Mean Representation: $(o[:meanrep]); GMM Context: $(o[:hascontext])")
-  println("Data filename: $(o[:filename])")
-  println("Annotated data filename: $(o[:a_filename])")
-  println("Optimizer: $(o[:optimization]) Vocabsize: $(o[:V])")
+  println("Data filename: $(o[:filename]); Annotated data filename: $(o[:a_filename]); Readydata: $(o[:readydata])")
+  println("Optimizer: $(o[:optimization]); Vocabsize: $(o[:V])")
   @printf("lr: %g minlr: %g; lr-decay-rate: %g; dprob: %g; z_size: %g; batchsize: %g \n", o[:lr], o[:minlr], o[:lr_decay_rate], o[:dprob], o[:z_size], o[:batchsize])
 end
 
