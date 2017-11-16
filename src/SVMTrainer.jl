@@ -7,21 +7,29 @@ include("DataManager.jl")
 using Drawing, DataLoader, IDM
 using JSON, SVR, ArgParse, JLD
 
-function getfeats(annotations)
+function getfeats(annotations, o)
   info("Extracting idm features")
   features = Dict()
+  reportsize = true
   for label in keys(annotations)
   #  println("$(label) $(length(annotations[label]))")
     features[label] = []
     for (points, end_indices, sketch) in annotations[label]
       mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
-      fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
-      #println(size(idm), size(mid))
-      idm = hcat(idm, fullidm)
-      idm = hcat(idm, mid')
-      idm = hcat(idm, points[:, 1]'/256)
-      idm = hcat(idm, points[:, size(points,2)]'/256)
+      if o[:hascontext]
+        fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
+        idm = hcat(idm, fullidm)
+      end
+      if o[:hasendmid]
+        idm = hcat(idm, mid')
+        idm = hcat(idm, points[:, 1]'/256)
+        idm = hcat(idm, points[:, size(points,2)]'/256)
+      end
+      if reportsize
+        println("IDM feature size: $(size(idm))")
+        reportsize = false
+      end
       push!(features[label], idm)
     end
   end
@@ -127,6 +135,10 @@ function trainsvm(trndata, tstdata, C, gamma, labels)
   SVR.freemodel(svmmodel)
 end
 
+function reportsvmsettings(o)
+  println("Annotated file name: $(o[:a_filename]); # of cross-validation folds: $(o[:cv])")
+  println("Is mean idm image included: $(o[:hascontext]); Are mean & end included as features: $(o[:hasendmid]) ")
+end
 
 function main(args=ARGS)
   s = ArgParseSettings()
@@ -136,18 +148,22 @@ function main(args=ARGS)
     ("--tstsize"; arg_type=Float64; default=0.2; help="Test set proportion.")
     ("--cv"; arg_type=Int; default=5; help="Cross validation fold parameter.")
     ("--datapath"; arg_type=String; default="../annotateddata/"; help="Path to annotated data.")
-    ("--filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Filename of annotated data.")
-    ("--readydata"; action=:store_true; help="is data preprocessed and ready")
+    ("--a_filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Filename of annotated data.")
+    ("--readydata"; action=:store_true; help="is data preprocessed and ready.")
+    ("--hascontext"; action=:store_true; help="True if pair idm feature to be used.")
+    ("--hasendmid"; action=:store_true; help="True if plain idm to be used.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-  filename = string(o[:datapath], o[:filename])
+  filename = string(o[:datapath], o[:a_filename])
   #labels = [  "W", "B", "T" ,"WNDW", "FA"]
-  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
+  labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
   #labels = [ "L", "F", "FP"]
   vldsize = 1/5
   annotations = getannotateddata(filename, labels)
+  reportsvmsettings(o)
   #annot2pic(filename, labels)
   #=sketches = annotated2sketch_obj(annotations)
   params = Parameters()
@@ -162,9 +178,10 @@ function main(args=ARGS)
 
   #println(numbatches)
   printdatastats(annotations)
-  idms = getfeats(annotations)
+  idms = getfeats(annotations, o)
+  rawname = split(o[:a_filename], ".")[1]
   if o[:readydata]
-    trn_tst_indices = load("cat500trn_tst_indices.jld")["indices"] #CHANGE THIS FILENAME
+    trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"] #CHANGE THIS FILENAME
   else
     trn_tst_indices = nothing
   end

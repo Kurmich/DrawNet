@@ -213,171 +213,7 @@ function normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params::Parameter
   DataLoader.normalize!(tstpoints3D, params; scalefactor=params.scalefactor)
 end
 
-
-function classify_w_context(model, data, f_data, ygold, seqlen, wkl, o; istraining::Bool = true, dprob = 0, weights=nothing)
-  maxlen = length(data) #maximum length of the input sequence
-  (batchsize, V) = size(data[1])
-  d_H = size(model[:pred][1], 1) #decoder hidden unit size
-  z_size = size(model[:sigma_cap][1], 2) #size of latent vector z
-  #println(size(f_data[1]), size(data[1]), size(model[:fw_embed][1]))
-  h = encode(model, f_data, length(f_data), batchsize; dprob=dprob, attn=o[:attn]) #encode using full sketch
-#  println("length f_data ", length(f_data), " size f_data[1] ", size(f_data[1]))
-  #predecoder step
-  mu = h*model[:mu][1] .+ model[:mu][2]
-  sigma_cap = h*model[:sigma_cap][1] .+ model[:sigma_cap][2]
-  sigma = exp( sigma_cap/2 )
-  z = mu + sigma .* atype( gaussian(batchsize, z_size; mean=0.0, std=1.0) )
-
-#  println("size z", size(z))
-  #println("size data[1]", size(data[1]))
-  #decoder step
-  hc = tanh(z * model[:z][1] .+ model[:z][2])
-  state = (hc[:, 1:d_H], hc[:, d_H+1:2d_H])
-  w = AutoGrad.getval(model)
-  hasembed, hasshift = haskey(w, :embed), haskey(w, :dec_shifts)
-  alpha, beta  = hasshift ? (model[:dec_shifts][1], model[:dec_shifts][2]) : (nothing, nothing)
-  #println("classify_w_context maxlen ", maxlen)
-  for i = 1:maxlen
-    input = hcat(data[i], z)
-    #println("knet arr ", Array(AutoGrad.getval(input)))
-    if hasembed
-      input = input * model[:embed]
-    end
-    #mask = 1 .- input[:, V]
-    state = lstm(model[:decode], state, input; alpha=alpha, beta=beta, dprob=dprob)
-  end
-  ypred = state[1]*model[:pred][1] .+ model[:pred][2]
-  ynorm = logp(ypred, 2)
-  softloss = -sum(ygold .* ynorm .* weights)/batchsize
-  kl_loss = -sum((1 + sigma_cap - mu.*mu - exp(sigma_cap))) / (2*z_size*batchsize)   #Kullback-Leibler divergence loss term
-
-  if istraining
-    kl_loss = max(kl_loss, kl_tolerance)
-  else
-    return softloss, kl_loss, ypred
-  end
-  loss = softloss + wkl*kl_loss
-  return loss
-end
-
-
-
-function eval_w_context(model, data, f_data, seqlens, ygold, o; genmodel = nothing, weights = nothing)
-  correct_count = zeros(1, size(ygold[1], 2))
-  instance_count = zeros(1, size(ygold[1], 2))
-  curloss, curright = 0.0, 0.0
-  loss, kloss, correct = 0.0, 0.0, 0.0
-  ygold = map(a->convert(atype, a), ygold)
-  count = 0.0
-  for i = 1:length(data)
-    for j = 1:length(data[i])
-      softloss, kl_loss, ypred = classify_w_context(model, map(a->convert(atype, a), data[i][j]), map(a->convert(atype, a), f_data[i]), ygold[i], seqlens[i][j], 0, o; istraining=false, dprob=0, weights=weights)
-      correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
-      loss += softloss
-      kloss += kl_loss
-      count += size(ygold[i], 1) #CHECK
-    end
-  end
-  return loss/count, kloss/count, correct_count, instance_count
-end
-
-gradcon = grad(classify_w_context)
-function segment_w_context(model, dataset, opts, o; genmodel = nothing)
-  (trndata, trnseqlens, trngold, trnstats, f_trndata, f_trnseqlens)  = dataset[:trn]
-  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens) = dataset[:vld]
-  (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens) = dataset[:tst]
-  append!(trndata, vlddata)
-  append!(trnseqlens, vldseqlens)
-  append!(f_trndata, f_vlddata)
-  append!(f_trnseqlens, f_vldseqlens)
-  append!(trngold, vldgold)
-  trnstats += vldstats
-  (vlddata, vldseqlens, vldgold, vldstats) = (tstdata, tstseqlens, tstgold, tststats)
-  f_vlddata = f_tstdata
-  println(trnstats)
-  println(-trnstats/maximum(trnstats))
-  weights = softmax(-trnstats/maximum(trnstats), 2) # per class weights for loss function
-  #weights[5] *= 0.3
-  #weights = ones(size(weights))
-  println(weights)
-  flush(STDOUT)
-  weights = atype(weights)
-  cur_wkl, step, cur_lr = 0, 0, 0
-  best_vld_cost = 100000
-  trngold = map(a->convert(atype, a), trngold)
-  for e = 1:o[:epochs]
-    for i = 1:length(trndata)
-      for j = 1:length(trndata[i])
-        @assert(length(trndata[i]) == 1)
-        cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
-        cur_lr = (LRP.lr - LRP.minlr)*(LRP.decayrate^step) + LRP.minlr
-        x = perturb(trndata[i][j]; scalefactor=o[:scalefactor])
-        #println("input arr ", x[2])
-        #println(size(f_trndata[i][1]))
-        f_x = perturb(f_trndata[i]; scalefactor=o[:scalefactor])
-        #println(size(f_x[1]))
-        grads = gradcon(model, map(a->convert(atype, a), x), map(a->convert(atype, a), f_x), trngold[i], trnseqlens[i][j], cur_wkl, o; dprob=o[:dprob], weights=weights)
-        updatelr!(opts, cur_lr)
-        update!(model, grads, opts)
-        step += 1
-        #vld_soft_loss, vld_kl_loss, correct_count, instance_count = eval_w_context(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, weights=weights)
-        #@printf("vld data - epoch: %d step: %d lr: %g vld softloss loss: %g vld kl loss: %g total acc: %g\n", e, step, cur_lr, vld_soft_loss, vld_kl_loss, sum(correct_count)/sum(instance_count))
-      end
-    end
-    vld_soft_loss, vld_kl_loss, correct_count, instance_count = eval_w_context(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, weights=weights)
-    vld_loss = vld_soft_loss + vld_kl_loss
-    #save the best model
-    if vld_loss < best_vld_cost
-      best_vld_cost = vld_loss
-      arrmodel = convertmodel(model)
-      println("Epoch: $(e) saving best model to $(pretrnp)$(o[:bestmodel])")
-      save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
-    end
-    #report losses
-    @printf("vld data - epoch: %d step: %d lr: %g vld softloss loss: %g vld kl loss: %g total acc: %g\n", e, step, cur_lr, vld_soft_loss, vld_kl_loss, sum(correct_count)/sum(instance_count))
-    for c = 1:length(correct_count)
-      @printf("vld data - epoch: %d class %d instances: %d acc: %g \n", e, c, instance_count[c], correct_count[c]/instance_count[c] )
-    end
-    #save every o[:save_every] epochs
-    if e%o[:save_every] == 0
-      arrmodel = convertmodel(model)
-      save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
-    end
-    flush(STDOUT)
-  end
-end
-
-function transclassify_full(model, genmodel, data, seqlen, ygold, o; istraining::Bool = true, weights = nothing, fullgenmodel=nothing, fulldata = nothing)
-  seqlen = length(data)
-  batchsize = size(data[1], 1)
-  if !istraining
-    h = encode(genmodel, data, seqlen, batchsize; dprob=0)
-    if fullgenmodel != nothing
-      h_full = encode(fullgenmodel, fulldata, length(fulldata), batchsize; dprob=0)
-      h = hcat(h, h_full)
-    end
-    h = h*model[:w1][1] .+ model[:w1][2]
-    ypred = h*model[:pred][1] .+ model[:pred][2]
-    ynorm = logp(ypred, 2)
-    return -sum(ygold .* ynorm)/size(ygold, 1), ypred
-  end
-  h = encode(genmodel, data, seqlen, batchsize; dprob=o[:dprob])
-  if fullgenmodel != nothing
-    h_full = encode(fullgenmodel, fulldata, length(fulldata), batchsize; dprob=o[:dprob])
-    h = hcat(h, h_full)
-  end
-  h = h*model[:w1][1] .+ model[:w1][2]
-  ypred = h*model[:pred][1] .+ model[:pred][2]
-  ynorm = logp(ypred, 2)
-  if weights == nothing
-    return -sum(ygold .* ynorm)/size(ygold, 1)
-  end
-  return -sum(ygold .* ynorm .* weights)/size(ygold, 1)
-end
-
-
-
-function classify(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing, istate = nothing , z = nothing)
+function plainloss(model, data, seqlen, ygold, o; epsilon = 1e-6, istraining::Bool = true, weights = nothing, istate = nothing , z = nothing)
   #model settings
   if z != nothing
     d_H = size(model[:fw_embed], 2)
@@ -421,40 +257,9 @@ function countcorrect(ypred, ygold, correct_count, instance_count)
 	return correct=#
 end
 
-function evalsegm_full(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fullgenmodel = nothing, weights = nothing)
-  correct_count = zeros(1, size(ygold[1], 2))
-  instance_count = zeros(1, size(ygold[1], 2))
-  curloss, curright = 0.0, 0.0
-  loss, correct = 0.0, 0.0
-  ygold = map(a->convert(atype, a), ygold)
-  count = 0.0
-  for i = 1:length(data)
-    for j = 1:length(data[i])
-      if o[:hascontext]
-        #d_H = size(genmodel[:output][1], 1)
-        x = map(a->convert(atype, a), data[i][j])
-        #z = getlatentvector(genmodel, x)
-        #=x = map(a->convert(atype, a), data[i][j])
-        f_x = map(a->convert(atype, a), f_data[i])
-        z = getlatentvector(genmodel, f_x)
-        x = appendlatentvec(x, z)=#
-        #curloss, ypred = classify(model, x, seqlens[i][j], ygold[i], o; istraining=false, z = z, weights=weights)
-        f_x = map(a->convert(atype, a), f_data[i])
-        curloss, ypred = transclassify(model, genmodel, x, seqlens[i][j], ygold[i], o; istraining = false, fullgenmodel= fullgenmodel, weights=weights, fulldata=f_x)
-      else
-        curloss, ypred = classify(model, map(a->convert(atype, a), data[i][j]), seqlens[i][j], ygold[i], o; istraining=false, weights=weights)
-      end
-      correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
-      loss += curloss
-      count += size(ygold[i], 1) #CHECK
-    end
-  end
-  return loss/count, correct_count, instance_count
-end
 
 
-
-function transclassify(model, genmodel, data, seqlen, ygold, o; istraining::Bool = true, weights = nothing, fullgenmodel = nothing, fulldata = nothing, fullseqlen = nothing)
+function transferloss(model, genmodel, data, seqlen, ygold, o; istraining::Bool = true, weights = nothing, fullgenmodel = nothing, fulldata = nothing, fullseqlen = nothing, avg_idms = nothing)
   seqlen = length(data)
   batchsize = size(data[1], 1)
   if !istraining
@@ -463,6 +268,7 @@ function transclassify(model, genmodel, data, seqlen, ygold, o; istraining::Bool
       h1 = encode(fullgenmodel, fulldata, fullseqlen, batchsize; dprob=0)
       h = hcat(h, h1)
     end
+    h = hcat(h, avg_idms)
     h = relu(h*model[:w1][1] .+ model[:w1][2])
     h = relu(h*model[:w2][1] .+ model[:w2][2])
     ypred = h*model[:pred][1] .+ model[:pred][2]
@@ -474,6 +280,7 @@ function transclassify(model, genmodel, data, seqlen, ygold, o; istraining::Bool
     h1 = encode(fullgenmodel, fulldata, fullseqlen, batchsize; dprob=o[:dprob])
     h = hcat(h, h1)
   end
+  h = hcat(h, avg_idms)
   h = relu(h*model[:w1][1] .+ model[:w1][2])
   h = dropout(h, 0.5)
   h = relu(h*model[:w2][1] .+ model[:w2][2])
@@ -487,7 +294,7 @@ function transclassify(model, genmodel, data, seqlen, ygold, o; istraining::Bool
 end
 
 
-function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fullgenmodel = nothing, f_seqlens= nothing, weights = nothing)
+function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fullgenmodel = nothing, f_seqlens= nothing, weights = nothing, idms = nothing)
   correct_count = zeros(1, size(ygold[1], 2))
   instance_count = zeros(1, size(ygold[1], 2))
   curloss, curright = 0.0, 0.0
@@ -499,16 +306,10 @@ function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fu
       #d_H = size(genmodel[:output][1], 1)
       x = map(a->convert(atype, a), data[i])
       xfull = map(a->convert(atype, a), f_data[i])
-      #z = getlatentvector(genmodel, x)
-      #=x = map(a->convert(atype, a), data[i][j])
-      f_x = map(a->convert(atype, a), f_data[i])
-      z = getlatentvector(genmodel, f_x)
-      x = appendlatentvec(x, z)=#
-      #curloss, ypred = classify(model, x, seqlens[i][j], ygold[i], o; istraining=false, z = z, weights=weights)
-      #f_x = map(a->convert(atype, a), f_data[i])
-      curloss, ypred = transclassify(model, genmodel, x, seqlens[i], ygold[i], o; istraining = false, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_seqlens[i])
+      avg_idms = atype(idms[i])
+      curloss, ypred = transferloss(model, genmodel, x, seqlens[i], ygold[i], o; istraining = false, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_seqlens[i], avg_idms=avg_idms)
     else
-      curloss, ypred = classify(model, map(a->convert(atype, a), data[i]), seqlens[i], ygold[i], o; istraining=false, weights=weights)
+      curloss, ypred = plainloss(model, map(a->convert(atype, a), data[i]), seqlens[i], ygold[i], o; istraining=false, weights=weights)
     end
     correct_count, instance_count = countcorrect(Array(ypred), Array(ygold[i]), correct_count, instance_count)
     loss += curloss
@@ -517,15 +318,16 @@ function evalsegm(model, data, f_data, seqlens, ygold, o; genmodel = nothing, fu
   return loss/count, correct_count, instance_count
 end
 
-gradtrans = grad(transclassify)
-gradloss = grad(classify)
+gradtrans = grad(transferloss)
+gradplain = grad(plainloss)
 function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = nothing)
-  (trndata, trnseqlens, trngold, trnstats, f_trndata, f_trnseqlens)  = dataset[:trn]
-  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens) = dataset[:vld]
-  (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens) = dataset[:tst]
+  (trndata, trnseqlens, trngold, trnstats, f_trndata, f_trnseqlens, trnavgidms)  = dataset[:trn]
+  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens, vldavgidms) = dataset[:vld]
+  (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens, tstavgidms) = dataset[:tst]
   append!(trndata, vlddata)
   append!(trnseqlens, vldseqlens)
   append!(trngold, vldgold)
+  append!(trnavgidms, vldavgidms)
   #append!(trndata, tstdata)
   #append!(trnseqlens, tstseqlens)
   #append!(trngold, tstgold)
@@ -533,7 +335,7 @@ function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = not
   append!(f_trnseqlens, f_vldseqlens)
 
   trnstats += vldstats
-  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens) = (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens)
+  (vlddata, vldseqlens, vldgold, vldstats, f_vlddata, f_vldseqlens, vldavgidms) = (tstdata, tstseqlens, tstgold, tststats, f_tstdata, f_tstseqlens, tstavgidms)
   f_vlddata = f_tstdata
   println(trnstats)
   println(-trnstats/maximum(trnstats))
@@ -544,7 +346,7 @@ function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = not
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   trngold = map(a->convert(atype, a), trngold)
-
+  @assert(length(trndata) == length(trngold))
   for e = 1:o[:epochs]
     for i = 1:length(trndata)
       cur_wkl = KL.w - (KL.w - KL.wstart) * ((KL.decayrate)^step)
@@ -552,35 +354,18 @@ function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = not
       x = perturb(trndata[i]; scalefactor=o[:scalefactor])
       xfull = perturb(f_trndata[i]; scalefactor=o[:scalefactor])
       if o[:hascontext]
-        #d_H = size(genmodel[:output][1], 1)
-        #x = map(a->convert(atype, a), x)
-        #z = getlatentvector(genmodel, x)
-        #=x = map(a->convert(atype, a), x)
-        f_x = map(a->convert(atype, a), f_trndata[i])
-        z = getlatentvector(genmodel, f_x)
-        x = appendlatentvec(x, z)=#
-        #grads = gradloss(model, x, trnseqlens[i][j], trngold[i], o; weights=weights, z=z)
-        #f_x = map(a->convert(atype, a), f_trndata[i])
         x = map(a->convert(atype, a), x)
         xfull = map(a->convert(atype, a), xfull)
-        grads = gradtrans(model, genmodel, x, trnseqlens[i], trngold[i], o; istraining = true, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_trnseqlens[i])
+        avg_idms = atype(trnavgidms[i])
+        grads = gradtrans(model, genmodel, x, trnseqlens[i], trngold[i], o; istraining = true, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_trnseqlens[i], avg_idms=avg_idms)
       else
-        grads = gradloss(model, map(a->convert(atype, a), x), trnseqlens[i], trngold[i], o; weights=weights)
+        grads = gradplain(model, map(a->convert(atype, a), x), trnseqlens[i], trngold[i], o; weights=weights)
       end
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
-      #=vld_loss, correct_count, instance_count = evalsegm(model, vlddata, vldseqlens, vldgold, o)
-      #save the best model
-      if vld_loss < best_vld_cost
-        best_vld_cost = vld_loss
-        arrmodel = convertmodel(model)
-        println("Step: $(step) saving best model to $(pretrnp)$(o[:bestmodel])")
-        save("$(pretrnp)$(o[:bestmodel])","model", arrmodel)
-        @printf("vld data - epoch: %d step: %d lr: %g vld loss: %g total acc: %g\n", e, step, cur_lr, vld_loss, sum(correct_count)/sum(instance_count))
-      end=#
     end
-    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights)
+    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights, idms = vldavgidms)
     #save the best model
     if vld_loss < best_vld_cost
       best_vld_cost = vld_loss
@@ -593,11 +378,11 @@ function segment(model, dataset, opts, o; genmodel = nothing, fullgenmodel = not
     for c = 1:length(correct_count)
       @printf("vld data - epoch: %d; class %d; instances: %d; correct instances: %d; acc: %g \n", e, c, instance_count[c], correct_count[c], correct_count[c]/instance_count[c] )
     end
-    #save every o[:save_every] epochs
+    #=save every o[:save_every] epochs
     if e%o[:save_every] == 0
       arrmodel = convertmodel(model)
       save("$(pretrnp)m$(e)$(o[:tmpmodel])","model", arrmodel)
-    end
+    end=#
     flush(STDOUT)
   end
 end
@@ -799,20 +584,27 @@ function get_splitteddata(data, trnidx, vldidx, tstidx)
   return data[trnidx], data[vldidx], data[tstidx]
 end
 
-function makebatches(sketches, points3D, f_points3D, labels, V, params; full::Bool = false)
+function makebatches(sketches, points3D, f_sketches, f_points3D, labels, V, params; full::Bool = false)
   #=creates batches of annotated data=#
+  @assert(length(sketches)==length(f_sketches))
   f_data, f_seqlens =  sketch_minibatch(f_points3D, V, params)
   data, seqlens = minibatch(points3D, V, params)
   ygolds, instance_per_label = getlabels(sketches, labels, params)
+  println(sketches[1].end_indices)
+  println(f_sketches[1].end_indices)
+  im = extract_avg_idm(f_sketches[3].points, f_sketches[3].end_indices)
+  saveidm(im, "sampleidm.png")
+  savesketch(f_sketches[3], "idmsketch.png")
+  avg_idms = get_avg_idms(sketches, f_sketches, params)
   @assert(length(ygolds) == length(data))
-  return (data, seqlens, ygolds, instance_per_label, f_data, f_seqlens)
+  return (data, seqlens, ygolds, instance_per_label, f_data, f_seqlens, avg_idms)
 end
 
-function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, V, params)
+function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, labels, V, params)
   dataset = Dict()
-  dataset[:trn] = makebatches(trnsketches, trnpoints3D, f_trnpoints3D, labels, V, params)
-  dataset[:vld] = makebatches(vldsketches, vldpoints3D, f_vldpoints3D, labels, V, params)
-  dataset[:tst] = makebatches(tstsketches, tstpoints3D, f_tstpoints3D, labels, V, params)
+  dataset[:trn] = makebatches(trnsketches, trnpoints3D, f_trnsketches, f_trnpoints3D, labels, V, params)
+  dataset[:vld] = makebatches(vldsketches, vldpoints3D, f_vldsketches, f_vldpoints3D, labels, V, params)
+  dataset[:tst] = makebatches(tstsketches, tstpoints3D, f_tstsketches, f_tstpoints3D, labels, V, params)
   return dataset
 end
 
@@ -872,15 +664,15 @@ function makesplit(sketches, labels, o; trn_tst_indices = nothing, trn_vld_indic
     trndict, vlddict = train_test_split(trndict, vldsize; indices = trn_vld_indices)
   end
   println("CHECK ", trn_vld_indices==nothing)
-  trndata = shuffle(dict2list(trndict))  #as list ,> this is list of lists we need just list of sketches
-  vlddata = shuffle(dict2list(vlddict))
-  tstdata = shuffle(dict2list(tstdict)) #as list
+  trndata = dict2list(trndict, labels)  #as list ,> this is list of lists we need just list of sketches
+  vlddata = dict2list(vlddict, labels)
+  tstdata = dict2list(tstdict, labels) #as list
   @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trndata), length(vlddata), length(tstdata))
   trnpoints3D, numbatches, trnsketches = preprocess(trndata, params)
   vldpoints3D, numbatches, vldsketches = preprocess(vlddata, params)
   tstpoints3D, numbatches, tstsketches = preprocess(tstdata, params)
   println("IN NORMALIZATION PHASE")
-  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params; scalefactor=49.15)
+  normalizedata!(trnpoints3D, vldpoints3D, tstpoints3D, params; scalefactor=48.318977)
   @printf("3D trnsize: %d vldsize: %d tstsize: %d \n", length(trnpoints3D), length(vldpoints3D), length(tstpoints3D))
   return trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices
 end
@@ -897,7 +689,7 @@ function get_seg_data(o, labels; trn_tst_indices = nothing, trn_vld_indices = no
   end
   trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, trn_tst_indices, trn_vld_indices = makesplit(sketches, labels, o; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
   f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, f_trn_tst_indices, f_trn_vld_indices = makesplit(full_sketches, labels, o; trn_tst_indices = trn_tst_indices, trn_vld_indices = trn_vld_indices, params = params)
-  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnpoints3D, f_vldpoints3D, f_tstpoints3D, labels, o[:V], params)
+  dataset = makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsketches, tstpoints3D, f_trnsketches, f_trnpoints3D, f_vldsketches, f_vldpoints3D, f_tstsketches, f_tstpoints3D, labels, o[:V], params)
   @printf("# of trn sketches: %d  # of trn batches: %d  \n", length(trnpoints3D), length(f_trnsketches))
   @printf("# of vld sketches: %d  # of vld batches: %d \n", length(vldpoints3D), length(f_vldpoints3D))
   return dataset, trn_tst_indices, trn_vld_indices
@@ -910,7 +702,8 @@ function rnncv(o)
   global const kl_tolerance = o[:kl_tolerance]
   #labels = [ "L", "F", "FP"]
   #labels = ["W", "B", "T", "WNDW", "FA"]
-  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
+  labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
   o[:numclasses] = length(labels)
   model = initransfer(o) #initsegmenter(o)
   params = Parameters()
@@ -936,9 +729,9 @@ function rnncv(o)
     println("Loading context model from $(pretrnp)$(o[:model])")
     w = load("$(pretrnp)$(o[:model])")
     genmodel = revconvertmodel(w["model"])
-    println("Loading full context model from $(pretrnp)$(o[:fullmodel])")
-    w = load("$(pretrnp)$(o[:fullmodel])")
-    fullgenmodel = revconvertmodel(w["model"])
+    #println("Loading full context model from $(pretrnp)$(o[:fullmodel])")
+  #  w = load("$(pretrnp)$(o[:fullmodel])")
+  #  fullgenmodel = revconvertmodel(w["model"])
   else
     genmodel = nothing
     fullgenmodel = nothing

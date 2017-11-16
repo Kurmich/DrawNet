@@ -175,10 +175,10 @@ function annotated2sketch_obj(annotations)
   return sketch_objects, full_sketch_objects
 end
 
-function dict2list(dictdata)
+function dict2list(dictdata, labels)
   listdata = []
-  for val in values(dictdata)
-    append!(listdata, val)
+  for label in labels
+    append!(listdata, dictdata[label])
   end
   return listdata
 end

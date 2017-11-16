@@ -348,10 +348,12 @@ function extract_avg_idm(points, end_indices; imlen::Int = 24, smooth::Bool = tr
   points = transform(points; newmax = imlen-1)
   avgim = markendpoints(points, end_indices, imsize)
   avgim = smooth? imfilter(avgim, gf) : (avgim)
+  avgim = downsample(avgim)
   for angle in angles
     pixelvals = get_pixelvals(thetas , angle)
     image = points2im(points, end_indices, imsize, pixelvals, thetaidx)
     image = smooth? imfilter(image, gf) : (image)
+    image = downsample(image)
     avgim += image
   end
   avgim /= 5
@@ -489,6 +491,6 @@ else
 end
 
 export get_im_stds, get_idm_objects, get_idm_batch
-export IdmTuple, save_idmtuples, load_idmtuples
+export IdmTuple, save_idmtuples, load_idmtuples, extract_avg_idm
 export idm_indices_to_batch, saveidm, extractidm, get_avg_idmfeat
 end

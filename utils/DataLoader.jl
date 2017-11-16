@@ -103,7 +103,7 @@ function preprocess_strokes(sketch_objects, params::Parameters)
         continue
       end
       #remove large gaps from data?
-      stroke[1:2, :] /= params.scalefactor
+      #stroke[1:2, :] /= params.scalefactor
       push!(rawstrokes, stroke)
       #add stroke for corresponding sketch
       push!(filtered_sketches, sketch)
@@ -152,7 +152,7 @@ function preprocess(sketch_objects, params::Parameters)
       #points = to_big_points(points)
       countdata += 1
       #remove large gaps from data?
-      points[1:2, :] /= params.scalefactor
+      #points[1:2, :] /= params.scalefactor
       push!(rawpoints, points)
       push!(filtered_sketches, sketch)
       push!(seqlen, len)

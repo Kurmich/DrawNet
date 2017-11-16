@@ -311,7 +311,8 @@ function rand_strokesketch(points3D)
   #idx = 58
   #idx = 2178
 #  idx = 2388
-  idx = 4389
+#  idx = 4389
+#  idx =  4284
   info("Selected index is $(idx)")
   return tostrokesketch(points3D, idx)
 end
@@ -384,7 +385,7 @@ function main(args=ARGS)
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
-
+  println("Loading model from $(pretrnp)$(o[:model])")
   w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
   global svmmodel = SVR.loadmodel(o[:svmmodel])
@@ -394,8 +395,9 @@ function main(args=ARGS)
   #global labels = [ "L", "F", "FP"]
   #classnames = ["leaf", "fruit", "full pineapple"]
   info("Model was loaded")
-#=  dataset = loaddataset("$(datap)dataset$(o[:dataset])")
-  sketches = dataset[:sketches]
+  dataset = loaddataset("$(datap)dataset$(o[:dataset])")
+  trnpoints3D, vldpoints3D, tstpoints3D = dataset[:trn][1], dataset[:vld][1], dataset[:tst][1]
+  #=sketches = dataset[:sketches]
   (trnidx, vldidx, tstidx) = dataset[:idx]
   trnsketches, vldsketches, tstsketches = sketches[trnidx], sketches[vldidx], sketches[tstidx]
   scalefactor = dataset[:scalefactor]
@@ -408,7 +410,7 @@ function main(args=ARGS)
   stroke_decode(model, z_vecs, seqlens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes4d)
   info("Dataset  obtained")
   return=#
-  trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
+  #trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
   end_indices =  find(x_5D[4, :] .== 1)
   s = 1
@@ -438,6 +440,7 @@ function main(args=ARGS)
     end
     return
   end
+  
   if o[:segmentmode]
     if o[:hascontext]
       w = load("$(pretrnp)$(o[:gmodel])")
@@ -455,7 +458,6 @@ function main(args=ARGS)
     sketchpoints3D, numbatches, sketches = getdata(o[:a_filename], params)
     sketchpoints3D = trnpoints3D
     #DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
-
     info("Number of sketches = $(length(sketchpoints3D))")
     for i = 1:length(sketchpoints3D)
       x, lens, x_5D = tostrokesketch(sketchpoints3D, i)

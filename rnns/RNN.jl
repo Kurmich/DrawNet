@@ -24,9 +24,9 @@ function initransfer(o)
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   numclasses = o[:numclasses]
   z_size = o[:z_size]
-  model[:w1] = [initxav(4d_H, 2d_H), initzeros(1, 2d_H) ]
-  model[:w2] = [initxav(2d_H, 2d_H), initzeros(1, 2d_H) ]
-  model[:pred] = [initxav(2d_H, numclasses), initzeros(1, numclasses)]
+  model[:w1] = [initxav(2d_H + 150, d_H), initzeros(1, d_H) ]
+  model[:w2] = [initxav(d_H, d_H), initzeros(1, d_H) ]
+  model[:pred] = [initxav(d_H, numclasses), initzeros(1, numclasses)]
   return model
 end
 

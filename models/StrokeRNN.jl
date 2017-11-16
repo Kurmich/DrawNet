@@ -131,6 +131,41 @@ function getlabels(sketches, labels, params)
   return onehotvecs, instance_per_label
 end
 
+function get_avg_idms(sketches, f_sketches, params)
+  batch_count = div(length(sketches), params.batchsize)
+  params.numbatches = batch_count
+  avg_idms = []
+  for idx=0:(batch_count-1)
+    start_ind = idx * params.batchsize
+    end_ind = min( (start_ind + params.batchsize), length(sketches))
+    indices = (start_ind + 1) : end_ind
+    batch = f_sketches[indices]
+    strokebatch = sketches[indices]
+    idms = nothing
+    for i=1:length(batch)
+      sketch = batch[i]
+      stroke = strokebatch[i]
+      #get mid and end points of the stroke
+      mid = (sum(stroke.points, 2)/(size(stroke.points, 2)*256))'
+      spnt =  stroke.points[:, 1]'/256
+      epnt = stroke.points[:, size(stroke.points,2)]'/256
+      #get average idm of full sketch
+      fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
+      #println(size(spnt), size(fullidm))
+      fullidm = hcat(fullidm, mid)
+      fullidm = hcat(fullidm, spnt)
+      fullidm = hcat(fullidm, epnt)
+      if idms == nothing
+        idms = fullidm
+      else
+        idms = vcat(idms, fullidm)
+      end
+    end
+    push!(avg_idms, idms)
+  end
+  return avg_idms
+end
+
 function getsketchbatch(x_batch_5D)
   info("Minibatching")
   data = []
