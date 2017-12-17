@@ -41,7 +41,7 @@ function stroke_constructsketch(points)
     for i=1:size(stroke, 2)
       x += Float64(stroke[1, i])
       y += Float64(stroke[2, i])
-      if stroke[5, i] == 1 #condition for V=4 -> stroke[3, i] == 0 for V=5 stroke[5, i] == 1
+      if ( length(stroke[:, i]) == 5 && stroke[3, i] == 0 )  || ( length(stroke[:, i]) == 5 && stroke[5, i] == 1 ) #condition for V=4 -> stroke[3, i] == 0 for V=5 stroke[5, i] == 1
         push!(endidxs, endidxs[end] + (i-1))
         break
       end
@@ -274,18 +274,12 @@ function makesequence(points5D)
   for i=1:size(points5D, 2)
     push!(sequence, points5D[:, i]')
   end
+  push!(sequence, [0 0 0 0 1])
   return sequence
 end
 
 
-function makesequence4d(points5D)
-  sequence = []
-  push!(sequence, [0 0 1 0 0])
-  for i=1:size(points5D, 2)
-    push!(sequence, points5D[:, i]')
-  end
-  return sequence
-end
+
 
 function tostrokesketch(points3D, idx)
   x_5D = to_big_points(points3D[idx]; max_len = 150)
@@ -299,7 +293,7 @@ function tostrokesketch(points3D, idx)
     tmp = makesequence(x_5D[:, stroke_start:end_indices[i]]) #IS THIS CORRECT? what about [0,0,0,1,0]?
     stroke_as_seq =  map(a->convert(atype, a), tmp)
     push!(strokeseq, stroke_as_seq)
-    push!(sseqlens, length(stroke_start:end_indices[i]))
+    push!(sseqlens, length(stroke_as_seq))
     stroke_start = end_indices[i] + 1
   end
   return strokeseq, sseqlens, x_5D
@@ -313,6 +307,9 @@ function rand_strokesketch(points3D)
 #  idx = 2388
 #  idx = 4389
 #  idx =  4284
+#idx = 933
+  #idx = 4946
+  #idx = 8244
   info("Selected index is $(idx)")
   return tostrokesketch(points3D, idx)
 end
@@ -346,20 +343,49 @@ function randstrokes(sketches, scalefactor)
    return strokes
 end
 
-function stroke2seq4d(strokes)
-  strokeseq = []
-  seqlens = []
-  strokes4d = []
-  for stroke in strokes
-    stroke4d = to_big_points(stroke, max_len = size(stroke, 2) + 2) #5D here
-    printpoints(stroke4d)
-    sequence = makesequence4d(stroke4d)
-    push!(strokes4d, stroke4d)
-    push!(strokeseq, map(a->convert(atype, a), sequence))
-    push!(seqlens, length(sequence))
+
+function rand4d_strokesketch(points3D)
+  idx = rand(1:length(points3D))
+  #idx  = 2889
+  #idx = 58
+  #idx = 2178
+#  idx = 2388
+#  idx = 4389
+#  idx =  4284
+#idx = 933
+#  idx = 4946
+#  idx = 8244
+  info("Selected index is $(idx)")
+  return points3D2seq4d(points3D, idx)
+end
+
+function makesequence4d(points5D)
+  sequence = []
+  push!(sequence, [0 0 1 0])
+  for i=1:size(points5D, 2)
+    push!(sequence, [points5D[1:2, i]' 1 0])
+    println("points",[points5D[1:2, i]' 1 0])
   end
-  println("original 4d points were printed")
-  return strokeseq, seqlens, strokes4d
+  push!(sequence, [0 0 0 1])
+  return sequence
+end
+
+function points3D2seq4d(points3D, idx)
+  x_5D = to_big_points(points3D[idx]; max_len = 150)
+  end_indices =  find(x_5D[4, :] .== 1)
+  push!(end_indices, size(x_5D, 2))
+  strokecount = Int(sum(x_5D[4, :]))
+  stroke_start = 1
+  strokeseq = []
+  sseqlens = []
+  for i = 1:strokecount
+    tmp = makesequence4d(x_5D[:, stroke_start:end_indices[i]]) #IS THIS CORRECT? what about [0,0,0,1,0]?
+    stroke_as_seq =  map(a->convert(atype, a), tmp)
+    push!(strokeseq, stroke_as_seq)
+    push!(sseqlens, length(strokeseq))
+    stroke_start = end_indices[i] + 1
+  end
+  return strokeseq, sseqlens, x_5D
 end
 
 function main(args=ARGS)
@@ -390,8 +416,12 @@ function main(args=ARGS)
   model = revconvertmodel(w["model"])
   global svmmodel = SVR.loadmodel(o[:svmmodel])
   #global labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-  global labels = [  "W", "B", "T" ,"WNDW", "FA"]
-  classnames = ["wing", "body", "tail", "window", "full airplane"]
+  #global labels = [  "W", "B", "T" ,"WNDW", "FA"]
+  #classnames = ["wing", "body", "tail", "window", "full airplane"]
+  #global labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #labels for firetruck
+ # classnames = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
+  global labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  classnames = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
   #global labels = [ "L", "F", "FP"]
   #classnames = ["leaf", "fruit", "full pineapple"]
   info("Model was loaded")
@@ -411,6 +441,24 @@ function main(args=ARGS)
   info("Dataset  obtained")
   return=#
   #trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
+  #=x4d, lens4d, x_5D = rand4d_strokesketch(tstpoints3D)
+  end_indices =  find(x_5D[4, :] .== 1)
+  s = 1
+  strokes = []
+  for i= 1:length(end_indices)
+    stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+    printpoints(stroke)
+    push!(strokes, stroke)
+    s = end_indices[i] + 1
+  end
+  sketch = stroke_constructsketch(strokes)
+  info("Random sketch was obtained")
+  savesketch(sketch, "original.png")
+  z_vecs = get_strokelatentvecs(model, x4d)
+  info("got latent vector(s)")
+  stroke_decode(model, z_vecs, lens4d; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
+  SVR.freemodel(svmmodel)
+  return=#
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
   end_indices =  find(x_5D[4, :] .== 1)
   s = 1
@@ -440,9 +488,10 @@ function main(args=ARGS)
     end
     return
   end
-  
+
   if o[:segmentmode]
     if o[:hascontext]
+      #load model for genrating sketches
       w = load("$(pretrnp)$(o[:gmodel])")
       genmodel = revconvertmodel(w["model"])
     end
@@ -455,7 +504,7 @@ function main(args=ARGS)
     params.max_seq_length = 200
     filename = string(annotp, o[:a_filename])
     info("NEEDS NORMALIZATION")
-    sketchpoints3D, numbatches, sketches = getdata(o[:a_filename], params)
+    #sketchpoints3D, numbatches, sketches = getdata(o[:a_filename], params)
     sketchpoints3D = trnpoints3D
     #DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
     info("Number of sketches = $(length(sketchpoints3D))")
@@ -473,7 +522,7 @@ function main(args=ARGS)
       sketch = stroke_constructsketch(strokes)
       strokeclasses = getstrokelabels(model, x, lens; genmodel=genmodel)
       println(strokeclasses)
-      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/e$(i).png")
+      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/ct$(i).png")
     end
 
     x, lens, x_5D = rand_strokesketch(sketchpoints3D)

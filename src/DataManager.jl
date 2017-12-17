@@ -1,59 +1,11 @@
 
-function update_annotations!(dict_data, annotations)
-  all_points, all_end_indices = getstrokes(dict_data["drawing"])
-  all_strokes = []
-  for strokenum=1:(length(all_end_indices)-1)
-    start_ind = all_end_indices[strokenum]+1
-    end_ind = all_end_indices[strokenum+1]
-    #get points of stroke
-    ps = all_points[:, start_ind:end_ind]
-    push!(all_strokes, ps)
-  end
-
-  #add labels for each stroke
-  for label in keys(annotations)
-    if haskey(dict_data, label)
-      points, end_indices = getstrokes(dict_data[label])
-      #label each sketch
-      for strokenum=1:(length(end_indices)-1)
-        start_ind = end_indices[strokenum]+1
-        end_ind = end_indices[strokenum+1]
-        #get points of stroke
-        ps = points[:, start_ind:end_ind]
-        ends = [0, length(start_ind:end_ind)]
-        push!(annotations[label], (ps, ends))
-        #remove annotated stroke from pool of unannotated ones
-        for ind= 1:length(all_strokes)
-          if size(all_strokes[ind]) == size(ps) && isapprox(all_strokes[ind], ps)
-          #  println("removing")
-            deleteat!(all_strokes, ind)
-            break
-          end
-        end
-      end
-    #  push!(annotations[label], (points, end_indices))
-    end
-  end
-  label = "F"
-  if haskey(dict_data, "FP")
-    return
-  end
-  for ind = 1:length(all_strokes)
-    if length(all_strokes[ind]) > 1
-      push!(annotations[label], (all_strokes[ind], [0, size(all_strokes[ind], 2)]))
-    else
-      println("point")
-    end
-  end
-end
-
-function update_annotations_airplane!(dict_data, annotations)
+function add_annotations!(dict_data, annotations)
   sketch = getsketch(dict_data)
   #add labels for each stroke
   for label in keys(annotations)
     if haskey(dict_data, label)
-      points, end_indices = getstrokes(dict_data[label])
-      #label each sketch
+      points, end_indices = getstrokes(dict_data[label]) #get all strokes for label
+      #add each stroke and its label to annotations
       for strokenum=1:(length(end_indices)-1)
         start_ind = end_indices[strokenum]+1
         end_ind = end_indices[strokenum+1]
@@ -61,9 +13,7 @@ function update_annotations_airplane!(dict_data, annotations)
         ps = points[:, start_ind:end_ind]
         ends = [0, length(start_ind:end_ind)]
         push!(annotations[label], (ps, ends, sketch))
-        #remove annotated stroke from pool of unannotated ones
       end
-    #  push!(annotations[label], (points, end_indices))
     end
   end
 end
@@ -87,20 +37,27 @@ function add_details!(dict_data, annotations)
   end
 end
 
-function getannotateddata(filename, labels)
-  println("Airplane annotations")
+function initannot(labels)
   annotations = Dict()
   for label in labels
     annotations[label] = []
   end
+  return annotations
+end
+
+function getannotateddata(filename, labels)
+  println("Airplane annotations")
+  annot_dicts = [] #contains all of the data in dictionaty format
+  annotations = initannot(labels) #annotations is the dictionary with label -> list of (ps(of stroke), ends(of stroke), sketch(this stroke belongs to))
   open(filename, "r") do f
      while !eof(f)
        text_data = readline(f)  # file information to string
        dict_data = JSON.parse(text_data)  # parse and transform data
-       update_annotations_airplane!(dict_data, annotations) ## CHANGE HERE
+       push!(annot_dicts, dict_data)
+       add_annotations!(dict_data, annotations) ## CHANGE HERE
      end
   end
-  return annotations
+  return annotations, annot_dicts
 end
 
 function annot2pic(filename, labels)
@@ -139,7 +96,7 @@ function annot2pic(filename, labels)
          end
        end
        strokeclasses[strokeclasses.==0] = length(classnames)
-       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/orig$(i).png")
+       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/catorig$(i).png")
        i += 1
      end
   end
@@ -160,6 +117,12 @@ function getannotatedkeys(filename)
 end
 
 function annotated2sketch_obj(annotations)
+  #=
+  Returns
+  sketch_objects(type: Dict) = label -> list of Sketch() objects for the labeled stroke
+  full_sketch_objects(type: Dict) = label -> list of Sketch() objects for full sketch
+  sketch_objects, full_sketch_objects correspond to each other in order
+  =#
   sketch_objects = Dict()
   full_sketch_objects = Dict()
   for label in keys(annotations)
@@ -175,7 +138,25 @@ function annotated2sketch_obj(annotations)
   return sketch_objects, full_sketch_objects
 end
 
+
+function getrandannots(annot_dicts, labels, count)
+  @assert(count <= length(annot_dicts), "Number of annotated data to use must be <= available data")
+  trnannotations = initannot(labels)
+  rp = randperm(length(annot_dicts))
+  annot2use = annot_dicts[1:count]
+  for dict_data in annot2use
+    add_annotations!(dict_data, trnannotations)
+  end
+  annot2use = annot_dicts[count+1:end]
+  tstannotations = initannot(labels)
+  for dict_data in annot2use
+    add_annotations!(dict_data, tstannotations)
+  end
+  return trnannotations
+end
+
 function dict2list(dictdata, labels)
+  #=Puts all data in dictionary to list and returns=#
   listdata = []
   for label in labels
     append!(listdata, dictdata[label])
@@ -197,12 +178,42 @@ function shift_indices!(indices, vldsize)
   for label in keys(indices)
     idx = indices[label]
     up = Int(floor(vldsize*length(idx)))
+    if up == 0
+      continue
+    end
     indices[label] = circshift(idx, up) #Circularly shift, i.e. rotate, the data in an array by "up" amount.
   end
 end
 
+
+function getshiftedindx(tt_indx, o)
+  up = div(length(tt_indx), o[:cvfolds])
+  return circshift(tt_indx, up)
+end
+
+function fillannotations!(annotations, annot2use)
+  for dict_data in annot2use
+    add_annotations!(dict_data, annotations)
+  end
+end
+
+function data_tt_split(annot_dicts, trncount::Int; rp = nothing)
+  #=train test split based on sketches=#
+  @assert(trncount > 0 && trncount < length(annot_dicts), "tstsize should be in range 0 < tstsize < $(length(annot_dicts))")
+  rp = (rp == nothing) ? randperm(length(annot_dicts)) : rp
+  trn_dicts = annot_dicts[rp[1:trncount]]
+  tst_dicts = annot_dicts[rp[trncount+1:length(rp)]]
+  return trn_dicts, tst_dicts
+end
+
+function getannotationdict(dict_data, labels)
+  annotations = initannot(labels)
+  fillannotations!(annotations, dict_data)
+  return annotations
+end
+
 function train_test_split(data, tstsize; indices = nothing)
-  #=Train test split =#
+  #=Train test split based on components=#
   @assert(tstsize > 0 && tstsize < 1, "tstsize should be in range 0 < tstsize < 1")
   indices = (indices == nothing) ? randindinces(data) : indices
   trndata = Dict()

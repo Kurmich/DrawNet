@@ -262,7 +262,7 @@ function indices_to_batch(sketchpoints3D, indices, V, params::Parameters)
   max_len = maximum(seqlen)
   params.max_seq_length = max_len + 1 #not to overpad
   if V == 4
-    x_batch_5D = padbatch_4d(x_batch, params)
+    x_batch_5D = padbatch(x_batch, params)# padbatch_4d(x_batch, params)
   else
     x_batch_5D = padbatch(x_batch, params)
   end

@@ -114,6 +114,7 @@ function getlabels(sketches, labels, params)
   numlabels = length(labels) #number of classes
   instance_per_label = zeros(1, numlabels)
   onehotvecs = []
+  @assert(batch_count > 0)
   for idx=0:(batch_count-1)
     start_ind = idx * params.batchsize
     end_ind = min( (start_ind + params.batchsize), length(sketches))
@@ -150,7 +151,7 @@ function get_avg_idms(sketches, f_sketches, params)
       spnt =  stroke.points[:, 1]'/256
       epnt = stroke.points[:, size(stroke.points,2)]'/256
       #get average idm of full sketch
-      fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
+      fullidm = extractidm(sketch.points, sketch.end_indices)
       #println(size(spnt), size(fullidm))
       fullidm = hcat(fullidm, mid)
       fullidm = hcat(fullidm, spnt)
@@ -214,6 +215,23 @@ function minibatch(sketchpoints3D, V, params)
     #x_batch, x_batch_4D, seqlen = getbatch(sketchpoints3D, i, V, params)
     x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, V, params)
     strokeseq, seqlen = getstrokeseqs(x_batch_5D)
+    append!(stroke_batches, strokeseq)
+    append!(stroke_seqlens, seqlen)
+  end
+  return stroke_batches, stroke_seqlens
+end
+
+function minibatch4d(sketchpoints3D, V, params)
+  #=stroke level minibatching=#
+  info("Stroke minibatching")
+  batch_count = div(length(sketchpoints3D), params.batchsize)
+  params.numbatches = batch_count
+  stroke_batches = []
+  stroke_seqlens = []
+  for i=0:(batch_count-1)
+    #x_batch, x_batch_4D, seqlen = getbatch(sketchpoints3D, i, V, params)
+    x_batch, x_batch_5D, seqlen = getbatch(sketchpoints3D, i, V, params)
+    strokeseq, seqlen = getstrokeseqs4d(x_batch_5D)
     append!(stroke_batches, strokeseq)
     append!(stroke_seqlens, seqlen)
   end

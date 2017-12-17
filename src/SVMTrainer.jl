@@ -18,7 +18,7 @@ function getfeats(annotations, o)
       mid = sum(points, 2)/(size(points, 2)*256) ##ADDING SPATIAL INFO
       idm = extractidm(points, end_indices)
       if o[:hascontext]
-        fullidm = get_avg_idmfeat(sketch.points, sketch.end_indices)
+        fullidm = extractidm(sketch.points, sketch.end_indices)
         idm = hcat(idm, fullidm)
       end
       if o[:hasendmid]
@@ -37,11 +37,11 @@ function getfeats(annotations, o)
 end
 
 
-function getaccuracy(svmmodel, features, ygold)
+function getaccuracy(svmmodel, features, ygold, labels)
   ypred = SVR.predict(svmmodel, features)
   @assert(length(ypred) == length(ygold))
-  correct_count = zeros(1, length(unique(ygold)))
-  instance_count = zeros(1, length(unique(ygold)))
+  correct_count = zeros(1, length(labels))
+  instance_count = zeros(1, length(labels))
   count = 0.0
   for i=1:length(ypred)
     #println(ypred[i])
@@ -88,7 +88,7 @@ function crossvalidate(data, cv, labels, C, gamma)
     trnfeats, trnlabels = get_feats_and_classes(trndata, labels)
     vldfeats, vldlabels = get_feats_and_classes(vlddata, labels)
     svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
-    acc, correct_count, instance_count = getaccuracy(svmmodel, vldfeats, vldlabels)
+    acc, correct_count, instance_count = getaccuracy(svmmodel, vldfeats, vldlabels, labels)
     println(correct_count ./ instance_count)
     push!(scores, acc)
     SVR.freemodel(svmmodel)
@@ -123,16 +123,17 @@ function get_cvd_params(data, cv, labels)
   return bestC, bestGamma
 end
 
-function trainsvm(trndata, tstdata, C, gamma, labels)
+function trainsvm(trndata, tstdata, C, gamma, labels, tstaccs)
   trnfeats, trnlabels = get_feats_and_classes(trndata, labels)
   tstfeats, tstlabels = get_feats_and_classes(tstdata, labels)
   svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
-  acc, correct_count, instance_count = getaccuracy(svmmodel, tstfeats, tstlabels)
+  acc, correct_count, instance_count = getaccuracy(svmmodel, tstfeats, tstlabels, labels)
   println(correct_count, instance_count)
   println(correct_count ./ instance_count)
   @printf("best C: %g best gamma: %g tst accuracy: %g \n", C, gamma, acc)
   SVR.savemodel(svmmodel, "airplane.model")
   SVR.freemodel(svmmodel)
+  push!(tstaccs, acc)
 end
 
 function reportsvmsettings(o)
@@ -152,6 +153,8 @@ function main(args=ARGS)
     ("--readydata"; action=:store_true; help="is data preprocessed and ready.")
     ("--hascontext"; action=:store_true; help="True if pair idm feature to be used.")
     ("--hasendmid"; action=:store_true; help="True if plain idm to be used.")
+    ("--fold"; arg_type=Int; default=-1; help="Current fold.")
+    ("--a_datasize"; arg_type=Int; default=0; help="Dataset size to use")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
@@ -162,8 +165,33 @@ function main(args=ARGS)
   labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
   #labels = [ "L", "F", "FP"]
   vldsize = 1/5
-  annotations = getannotateddata(filename, labels)
+
   reportsvmsettings(o)
+  rawname = split(o[:a_filename], ".")[1]
+  tstaccs = Float64[]
+  if o[:a_datasize] != 0
+    fln = "annotsplits/$(rawname)$(o[:a_datasize])$(o[:fold]).jld"
+    println("Loading data from $(fln)")
+    d = load(fln)
+    alldata = d["data"]
+    annotations, annot_dicts = getannotateddata(filename, labels)
+    for (dataset, tt, tv) in alldata
+      trn_dicts, tst_dicts = data_tt_split(annot_dicts, o[:a_datasize]; rp = tt)
+      trnannot = getannotationdict(trn_dicts, labels)
+      tstannot = getannotationdict(tst_dicts, labels)
+      println("Starting new split")
+      trnidms = getfeats(trnannot, o)
+      tstidms = getfeats(tstannot, o)
+      printdatastats(trnannot)
+      #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
+      C, gamma = get_cvd_params(trnidms, o[:cv], labels)
+      trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
+    end
+    println(tstaccs)
+    println("Mean: $(mean(tstaccs)) STD: $(std(tstaccs))")
+  end
+  return
+  annotations, annot_dicts = getannotateddata(filename, labels)
   #annot2pic(filename, labels)
   #=sketches = annotated2sketch_obj(annotations)
   params = Parameters()
@@ -179,9 +207,8 @@ function main(args=ARGS)
   #println(numbatches)
   printdatastats(annotations)
   idms = getfeats(annotations, o)
-  rawname = split(o[:a_filename], ".")[1]
   if o[:readydata]
-    trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"] #CHANGE THIS FILENAME
+    trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"]
   else
     trn_tst_indices = nothing
   end
@@ -189,7 +216,7 @@ function main(args=ARGS)
     println("Fold $(i) is Starting")
     trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
     C, gamma = get_cvd_params(trnidms, o[:cv], labels)
-    trainsvm(trnidms, tstidms, C, gamma, labels)
+    trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
     shift_indices!(trn_tst_indices, vldsize)
   end
 

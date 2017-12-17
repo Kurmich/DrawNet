@@ -1,5 +1,5 @@
 module Segmenter
-using PyPlot
+using PyPlot, Knet
 using DrawNet
 
 
@@ -11,7 +11,8 @@ function getstrokelabels(model, strokes, seqlens; genmodel = nothing)
     len = seqlens[i]
   #  println(size(stroke))
     h = encode(genmodel, stroke, len, batchsize; dprob=0, attn=haskey(model, :attn))
-    h = h*model[:w1][1] .+ model[:w1][2]
+    h = relu(h*model[:w1][1] .+ model[:w1][2])
+    h = relu(h*model[:w2][1] .+ model[:w2][2])
     ypred = h*model[:pred][1] .+ model[:pred][2]
   #  println(size(h), size(model[:pred][1]))
   #  println(Array(ypred))

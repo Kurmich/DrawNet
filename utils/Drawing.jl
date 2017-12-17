@@ -295,7 +295,7 @@ end
 
 function saveslabeled(sketch::Sketch, strokeclasses, classnames, filename::String="sketch.png"; completness=1, mydpi=100, imsize=400, scaled = false)
   #Prints contents of current sketch
-  colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan"]
+  colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan" "pink" "brown" "orange"]
   fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
   strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
   usedclasses = Int[]
