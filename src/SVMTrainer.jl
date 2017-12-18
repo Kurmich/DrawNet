@@ -137,7 +137,7 @@ function trainsvm(trndata, tstdata, C, gamma, labels, tstaccs)
 end
 
 function reportsvmsettings(o)
-  println("Annotated file name: $(o[:a_filename]); # of cross-validation folds: $(o[:cv])")
+  println("Annotated file name: $(o[:a_filename]); # of cross-validation folds: $(o[:cvfolds])")
   println("Is mean idm image included: $(o[:hascontext]); Are mean & end included as features: $(o[:hasendmid]) ")
 end
 
@@ -147,7 +147,7 @@ function main(args=ARGS)
   s.exc_handler=ArgParse.debug_handler
   @add_arg_table s begin
     ("--tstsize"; arg_type=Float64; default=0.2; help="Test set proportion.")
-    ("--cv"; arg_type=Int; default=5; help="Cross validation fold parameter.")
+    ("--cvfolds"; arg_type=Int; default=5; help="Cross validation fold parameter.")
     ("--datapath"; arg_type=String; default="../annotateddata/"; help="Path to annotated data.")
     ("--a_filename"; arg_type=String; default="r_full_simplified_airplane.ndjson"; help="Filename of annotated data.")
     ("--readydata"; action=:store_true; help="is data preprocessed and ready.")
@@ -162,7 +162,8 @@ function main(args=ARGS)
   filename = string(o[:datapath], o[:a_filename])
   #labels = [  "W", "B", "T" ,"WNDW", "FA"]
   #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
-  labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
+  #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
+  labels = [ "B", "S", "L"] #for chair
   #labels = [ "L", "F", "FP"]
   vldsize = 1/5
 
@@ -184,12 +185,33 @@ function main(args=ARGS)
       tstidms = getfeats(tstannot, o)
       printdatastats(trnannot)
       #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-      C, gamma = get_cvd_params(trnidms, o[:cv], labels)
+      C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
       trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
     end
     println(tstaccs)
     println("Mean: $(mean(tstaccs)) STD: $(std(tstaccs))")
+  else
+    annotations, annot_dicts = getannotateddata(filename, labels)
+    acount = length(annot_dicts)
+    tt = load("annotsplits/$(rawname)indices.jld")["indices"]
+    trnsize = acount - div(acount, o[:cvfolds])
+    println("training datasize $(trnsize)")
+    println("Fold $(o[:fold])")
+    for i=1:(o[:fold]-1)
+      println("Shifting $(i)")
+      tt = getshiftedindx(tt, o)
+    end
+    trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
+    trnannot = getannotationdict(trn_dicts, labels)
+    tstannot = getannotationdict(tst_dicts, labels)
+    trnidms = getfeats(trnannot, o)
+    tstidms = getfeats(tstannot, o)
+    printdatastats(trnannot)
+    #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
+    C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
+    trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
   end
+
   return
   annotations, annot_dicts = getannotateddata(filename, labels)
   #annot2pic(filename, labels)
@@ -212,10 +234,10 @@ function main(args=ARGS)
   else
     trn_tst_indices = nothing
   end
-  for i=1:o[:cv]
+  for i=1:o[:cvfolds]
     println("Fold $(i) is Starting")
     trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-    C, gamma = get_cvd_params(trnidms, o[:cv], labels)
+    C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
     trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
     shift_indices!(trn_tst_indices, vldsize)
   end

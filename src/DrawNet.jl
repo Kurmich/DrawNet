@@ -377,7 +377,7 @@ function segment(model, dataset, opts, o, tstaccs; genmodel = nothing, fullgenmo
       update!(model, grads, opts)
       step += 1
     end
-    if o[:a_datasize] <= 50 && e%40 != 0
+    if o[:a_datasize] <= 50 && e%20 != 0
       continue
     end
     vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights, idms = vldavgidms)
@@ -735,12 +735,12 @@ function get3ddata(annotations, labels, params)
   return points3D, sketches, full_points3D, full_sketches
 end
 
-function get_seg_data2(o, labels; trn_tst_indices = nothing, trn_vld_indices = nothing, params = nothing)
+function get_seg_data2(o, labels; tt = nothing, params = nothing)
   filename = string(annotp, o[:a_filename])
   #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   annotations, annot_dicts = getannotateddata(filename, labels)
   acount = length(annot_dicts)
-  tt = randperm(acount)
+  tt = (tt == nothing) ? randperm(acount) : tt
   #get training set size for train-test split
   if o[:a_datasize] == 0
     trnsize = acount - div(acount, o[:cvfolds])
@@ -760,10 +760,12 @@ function get_seg_data2(o, labels; trn_tst_indices = nothing, trn_vld_indices = n
   tst_points3D, tst_sketches, tst_full_points3D, tst_full_sketches = get3ddata(tstannotations, labels, params)
   @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trn_points3D), length(vld_points3D), length(tst_points3D))
   println("IN NORMALIZATION PHASE")
-  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=48.318977)
-  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=48.318977)
+  ftruck_norm = 48.318977
+  chair_norm = 56.06858
+  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=chair_norm)
+  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=chair_norm)
   dataset = makedataset(trn_sketches, trn_points3D, vld_sketches, vld_points3D, tst_sketches, tst_points3D, trn_full_sketches, trn_full_points3D, vld_full_sketches, vld_full_points3D, tst_full_sketches, tst_full_points3D, labels, o[:V], params)
-  return dataset, tt, tv
+  return dataset, tt
 end
 
 function rnncv(o)
@@ -773,8 +775,9 @@ function rnncv(o)
   global const kl_tolerance = o[:kl_tolerance]
   #labels = [ "L", "F", "FP"]
   #labels = ["W", "B", "T", "WNDW", "FA"]
-  labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
+  #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
   #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
+  labels = [ "B", "S", "L"] #for chair
   o[:numclasses] = length(labels)
   model = initransfer(o) #initsegmenter(o)
   params = Parameters()
@@ -785,11 +788,18 @@ function rnncv(o)
   smooth = true
   rawname = split(o[:a_filename], ".")[1]
   if !o[:readydata]
-    dataset, annotations, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; params=params)
+    dataset, tt = get_seg_data2(o, labels; params=params)
+    save("annotsplits/$(rawname)indices.jld", "indices", tt)
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
-    trn_tst_indices = load("$(rawname)trn_tst_indices.jld")["indices"]
-    trn_vld_indices = load("$(rawname)trn_vld_indices.jld")["indices"]
+    tt = load("annotsplits/$(rawname)indices.jld")["indices"]
+    println("Fold $(o[:fold])")
+    for i=1:(o[:fold]-1)
+      println("Shifting $(i)")
+      tt = getshiftedindx(tt, o)
+    end
+    params.max_seq_length = 200
+    dataset, tt = get_seg_data2(o, labels; tt = tt, params=params)
     #dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
   end
   println("Starting training")
@@ -808,26 +818,7 @@ function rnncv(o)
     fullgenmodel = nothing
   end
   tstaccs = Float64[]
-  if o[:fold] == -1
-    for i=1:o[:cvfolds]
-      params.max_seq_length = 200 #SOLVE THIS ISSUE
-      println("Fold $(i) is Starting")
-      segment(model, dataset, optim, o, tstaccs; genmodel=genmodel)
-      shift_indices!(trn_tst_indices, vldsize)
-      model = initransfer(o)
-      optim = initoptim(model, o[:optimization])
-      dataset, annotations, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; trn_tst_indices=trn_tst_indices, params=params)
-    end
-  else
-    println("Fold $(o[:fold])")
-    for i=1:(o[:fold]-1)
-      println("Shifting $(i)")
-      shift_indices!(trn_tst_indices, vldsize)
-    end
-    params.max_seq_length = 200
-    dataset, annotations, trn_tst_indices, trn_vld_indices = get_seg_data(o, labels; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
-    segment(model, dataset, optim, o, tstaccs; genmodel=genmodel, fullgenmodel=fullgenmodel)
-  end
+  segment(model, dataset, optim, o, tstaccs; genmodel=genmodel, fullgenmodel=fullgenmodel)
 end
 
 
@@ -855,8 +846,8 @@ function segmentation_mode(o)
     alldata = []
     for i=1:repeat
       params.max_seq_length = 200
-      dataset, tt, tv = get_seg_data2(o, labels; params=params)
-      push!(alldata, (dataset, tt, tv) )
+      dataset, tt = get_seg_data2(o, labels; params=params)
+      push!(alldata, (dataset, tt) )
     end
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
@@ -885,7 +876,7 @@ function segmentation_mode(o)
   end
   println("Starting training")
   flush(STDOUT)
-  for (dataset, tt, tv) in alldata
+  for (dataset, tt) in alldata
     println("Starting new split")
     segment(model, dataset, optim, o, tstaccs; genmodel=genmodel, fullgenmodel=fullgenmodel)
     model = initransfer(o)

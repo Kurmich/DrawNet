@@ -188,6 +188,7 @@ end
 
 function getshiftedindx(tt_indx, o)
   up = div(length(tt_indx), o[:cvfolds])
+  println("shifting by $(up)")
   return circshift(tt_indx, up)
 end
 
