@@ -14,7 +14,7 @@ type Parameters
   numbatches::Int
   sketchpoints
 end
-Parameters(; batchsize=100, max_seq_length=90, min_seq_length=5, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1)=Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
+Parameters(; batchsize=100, max_seq_length=90, min_seq_length=5, scalefactor=1.0, rand_scalefactor=0.10, augment_prob=0.0, limit=100, numbatches=1) = Parameters(batchsize, max_seq_length, min_seq_length, scalefactor, rand_scalefactor, augment_prob, limit,numbatches, nothing )
 
 global const datapath = "../data/"
 global const annotp = "../annotateddata/"
@@ -53,9 +53,9 @@ function getsketch(sketch_as_dict::Dict)
   return Sketch(label, recognized, key_id, points, end_indices)
 end
 
-function get_sketch_objects(filename)
-  println("will skip annotated files")
-  akeys = getannotatedkeys(string(annotp, "cat200.ndjson")) #SKIP ANNOTATED ONES
+function get_sketch_objects(filename; a_filename = "nothing")
+  println("Annotated file $(a_filename)")
+  akeys = getannotatedkeys(string(annotp, a_filename)) #SKIP ANNOTATED ONES
   #akeys = Dict()
 
   sketch_objects = []
@@ -65,7 +65,7 @@ function get_sketch_objects(filename)
        sketch_as_text = readline(f)  # file information to string
        sketch_as_dict = JSON.parse(sketch_as_text)  # parse and transform data
        if haskey(akeys, sketch_as_dict["key_id"])
-         info("skipping")
+         println("skipping $(sketch_as_dict["key_id"])")
          continue #SKIP ANNOTATED ONES
        end
        sketch = getsketch(sketch_as_dict)
@@ -127,7 +127,7 @@ function getstrokedata(filename = "full_simplified_airplane.ndjson"; params::Par
   strokedata = Dict()
   filepath = "$datapath$filename"
   println("Retrieving sketches from $(filepath) file")
-  sketches = get_sketch_objects(filepath)
+  sketches = get_sketch_objects(filepath; a_filename = a_filename)
   trnidx, vldidx, tstidx = splitdata(sketches)
   println("Retrieving 3D strokes from sketches")
   strokedata[:trn] = preprocess_strokes(sketches[trnidx], params) #returns trn_strokes3D, trn_numbatches, trn_sketches
@@ -138,7 +138,7 @@ function getstrokedata(filename = "full_simplified_airplane.ndjson"; params::Par
   return strokedata
 end
 
-function preprocess(sketch_objects, params::Parameters)
+function preprocess(sketch_objects, params::Parameters; maxdatacount = 0)
   #=Remove sketches having > max_seq_length points or < min_seq_length=#
   rawpoints = []
   seqlen = Int[]
@@ -156,14 +156,15 @@ function preprocess(sketch_objects, params::Parameters)
       push!(rawpoints, points)
       push!(filtered_sketches, sketch)
       push!(seqlen, len)
+    else
+      println("skipping")
     end
   end
   #sorted order according to sequence lengths
-  idx = sortperm(seqlen)
-  sketches = []
-  for i=1:length(seqlen)
-  #  push!(sketchpoints3D, rawpoints[idx[i]])
-  #  push!(sketches, filtered_sketches[idx[i]])
+  if maxdatacount != 0
+    countdata = maxdatacount
+    rawpoints = rawpoints[1:maxdatacount]
+    filtered_sketches = filtered_sketches[1:maxdatacount]
   end
   println("total images <= max_seq_length($(params.max_seq_length)) is $(countdata)")
   params.numbatches = div(countdata, params.batchsize)
@@ -260,13 +261,14 @@ function indices_to_batch(sketchpoints3D, indices, V, params::Parameters)
     push!(seqlen, len)
   end
   max_len = maximum(seqlen)
+  old_max = params.max_seq_length
   params.max_seq_length = max_len + 1 #not to overpad
   if V == 4
     x_batch_5D = padbatch(x_batch, params)# padbatch_4d(x_batch, params)
   else
     x_batch_5D = padbatch(x_batch, params)
   end
-
+  params.max_seq_length = old_max
   return x_batch, x_batch_5D, seqlen
 end
 
@@ -279,16 +281,16 @@ function getbatch(sketchpoints3D, idx, V, params::Parameters)
   return indices_to_batch(sketchpoints3D, indices, V, params)
 end
 
-function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; params::Parameters=Parameters())
+function getsketchpoints3D(filename = "full_simplified_airplane.ndjson"; a_filename = "nothing", params::Parameters=Parameters())
   data = Dict()
   filepath = "$datapath$filename"
   info("Retrieving sketches from $(filepath) file")
-  sketches = get_sketch_objects(filepath)
+  sketches = get_sketch_objects(filepath; a_filename = a_filename)
   trnidx, vldidx, tstidx = splitdata(sketches)
   info("Retrieving 3D points from sketches")
-  data[:trn] = preprocess(sketches[trnidx], params) #trn_sketchpoints3D, trn_numbatches, trn_sketches
-  data[:vld] = preprocess(sketches[vldidx], params) #vld_sketchpoints3D, vld_numbatches, vld_sketches
-  data[:tst] = preprocess(sketches[tstidx], params) #tst_sketchpoints3D, tst_numbatches, tst_sketches
+  data[:trn] = preprocess(sketches[trnidx], params; maxdatacount = 70000) #trn_sketchpoints3D, trn_numbatches, trn_sketches
+  data[:vld] = preprocess(sketches[vldidx], params; maxdatacount = 2500) #vld_sketchpoints3D, vld_numbatches, vld_sketches
+  data[:tst] = preprocess(sketches[tstidx], params; maxdatacount = 2500) #tst_sketchpoints3D, tst_numbatches, tst_sketches
   data[:idx] = (trnidx, vldidx, tstidx)
   return data
 end

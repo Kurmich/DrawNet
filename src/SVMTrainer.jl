@@ -30,6 +30,7 @@ function getfeats(annotations, o)
         println("IDM feature size: $(size(idm))")
         reportsize = false
       end
+      #println(label)
       push!(features[label], idm)
     end
   end
@@ -89,7 +90,7 @@ function crossvalidate(data, cv, labels, C, gamma)
     vldfeats, vldlabels = get_feats_and_classes(vlddata, labels)
     svmmodel = SVR.train(trnlabels, trnfeats; svm_type=SVR.C_SVC, kernel_type=SVR.RBF, C=C, gamma=gamma)
     acc, correct_count, instance_count = getaccuracy(svmmodel, vldfeats, vldlabels, labels)
-    println(correct_count ./ instance_count)
+    println(correct_count ./ instance_count, correct_count, instance_count)
     push!(scores, acc)
     SVR.freemodel(svmmodel)
   end
@@ -163,12 +164,18 @@ function main(args=ARGS)
   #labels = [  "W", "B", "T" ,"WNDW", "FA"]
   #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
   #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
-  labels = [ "B", "S", "L"] #for chair
+  #labels = [ "B", "S", "L"] #for chair
+  #labels = [ "P", "C" ,"S", "L"] #for flower
+  #labels = ["body", "wing", "horistab", "vertstab",  "engine", "propeller"]
   #labels = [ "L", "F", "FP"]
+  #annot2pic(filename, labels)
+  #return
   vldsize = 1/5
 
   reportsvmsettings(o)
   rawname = split(o[:a_filename], ".")[1]
+  categories = getGoogleLabels()
+  labels = categories[rawname]
   tstaccs = Float64[]
   if o[:a_datasize] != 0
     fln = "annotsplits/$(rawname)$(o[:a_datasize])$(o[:fold]).jld"

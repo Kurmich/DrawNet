@@ -96,7 +96,7 @@ function annot2pic(filename, labels)
          end
        end
        strokeclasses[strokeclasses.==0] = length(classnames)
-       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/catorig$(i).png")
+       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/huangairp$(i).png")
        i += 1
      end
   end
@@ -233,4 +233,30 @@ function printdatastats(annotations)
   for label in keys(annotations)
     println("$(label) $(length(annotations[label]))")
   end
+end
+
+function getHuangLabels()
+    category = Dict()
+    category["airplane"]   = ["body", "wing", "horistab", "vertstab",  "engine", "propeller"]
+    category["bicycle"]    = ["saddle", "frontframe", "wheel", "handle", "pedal", "chain", "fork", "backframe", "backcover" ]
+    category["candelabra"] = ["base", "candle", "fire", "handle", "shaft", "arm"]
+    category["chair"]      = ["back", "leg", "seat", "arm", "stile", "gas lift", "base", "foot", "stretcher", "spindle", "rail"]
+    category["fourleg"]    = ["head", "body", "ear", "leg", "tail"]
+    category["human"]      = ["head", "body", "arm", "leg", "hand", "foot"]
+    category["lamp"]       = ["tube", "base", "shade"]
+    category["rifle"]      = ["barrel", "body", "handgrip", "magazine", "trigger", "butt", "sight"]
+    category["table"]      = ["top", "leg", "stretcher", "base", "topsupport", "legsupport", "midsupport"]
+    category["vase"]       = ["lip", "handle", "body", "foot"]
+    return category
+end
+
+
+function getGoogleLabels()
+  category = Dict()
+  category["airplane"]   = ["W", "B", "T", "WNDW", "FA"]
+  category["cat"]        = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  category["firetruck"]  = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
+  category["chair"]      = [ "B", "S", "L"]
+  category["flower"]     = [ "P", "C" ,"S", "L"]
+  return category
 end

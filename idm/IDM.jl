@@ -106,6 +106,11 @@ function resample_stroke(points::Array; coeff = 1.01, ratio = 50, indices = 1:si
   end
   numpoints = 0
   newpoints = nothing
+  if length(indices) == 1
+    #println("single point")
+    return points, 1
+  end
+  #println("not single points $(length(indices))")
   for i = indices[2] : indices[end]
     prev_point = points[1:2, i-1]
     cur_point = points[1:2, i]

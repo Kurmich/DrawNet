@@ -62,6 +62,7 @@ function train(model, dataset, opts, o)
   (trndata, trnseqlens) = dataset[:trn]
   (vlddata, vldseqlens) = dataset[:vld]
   (tstdata, tstseqlens) = dataset[:tst]
+  eval_period = 5000
   cur_wkl, step, cur_lr = 0, 0, 0
   best_vld_cost = 100000
   for e = 1:o[:epochs]
@@ -73,6 +74,12 @@ function train(model, dataset, opts, o)
       updatelr!(opts, cur_lr)
       update!(model, grads, opts)
       step += 1
+      if step == 1 || step%eval_period == 0
+        (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
+        vld_cost = vld_rec_loss + KL.w * vld_kl_loss
+        @printf("eval=>vld data - epoch: %d step %d rec loss: %g KL loss: %g  wkl: %g lr: %g \n", e, step, vld_rec_loss, vld_kl_loss, cur_wkl, cur_lr)
+        flush(STDOUT)
+      end
     end
     (vld_rec_loss, vld_kl_loss) = evaluatemodel(model, vlddata, vldseqlens, KL.w)
     #save the best model
@@ -108,13 +115,13 @@ end
 
 
 function getlabels(sketches, labels, params)
-  batch_count = div(length(sketches), params.batchsize)
+  batch_count = get_batch_count(length(sketches), params.batchsize)
   params.numbatches = batch_count
 
   numlabels = length(labels) #number of classes
   instance_per_label = zeros(1, numlabels)
   onehotvecs = []
-  @assert(batch_count > 0)
+  @assert(batch_count > 0, "batch_count: $(batch_count)")
   for idx=0:(batch_count-1)
     start_ind = idx * params.batchsize
     end_ind = min( (start_ind + params.batchsize), length(sketches))
@@ -132,8 +139,15 @@ function getlabels(sketches, labels, params)
   return onehotvecs, instance_per_label
 end
 
+function get_batch_count(count, batchsize)
+  if count % batchsize == 0
+    return div(count, batchsize)
+  end
+  return div(count, batchsize) + 1
+end
+
 function get_avg_idms(sketches, f_sketches, params)
-  batch_count = div(length(sketches), params.batchsize)
+  batch_count = get_batch_count(length(sketches), params.batchsize)
   params.numbatches = batch_count
   avg_idms = []
   for idx=0:(batch_count-1)
@@ -182,7 +196,7 @@ end
 
 function sketch_minibatch(sketchpoints3D, V, params)
   info("Sketch minibatching")
-  batch_count = div(length(sketchpoints3D), params.batchsize)
+  batch_count = get_batch_count(length(sketchpoints3D), params.batchsize)
   params.numbatches = batch_count
   data = []
   #idm_data = []
@@ -207,7 +221,7 @@ end
 function minibatch(sketchpoints3D, V, params)
   #=stroke level minibatching=#
   info("Stroke minibatching")
-  batch_count = div(length(sketchpoints3D), params.batchsize)
+  batch_count = get_batch_count(length(sketchpoints3D), params.batchsize)
   params.numbatches = batch_count
   stroke_batches = []
   stroke_seqlens = []
@@ -224,7 +238,7 @@ end
 function minibatch4d(sketchpoints3D, V, params)
   #=stroke level minibatching=#
   info("Stroke minibatching")
-  batch_count = div(length(sketchpoints3D), params.batchsize)
+  batch_count = get_batch_count(length(sketchpoints3D), params.batchsize)
   params.numbatches = batch_count
   stroke_batches = []
   stroke_seqlens = []

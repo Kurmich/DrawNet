@@ -368,7 +368,7 @@ function segment(model, dataset, opts, o, tstaccs; genmodel = nothing, fullgenmo
         x = map(a->convert(atype, a), x)
         xfull = map(a->convert(atype, a), xfull)
         avg_idms = atype(trnavgidms[i])
-        #avg_idms = nothing
+        avg_idms = nothing
         grads = gradtrans(model, genmodel, x, trnseqlens[i], trngold[i], o; istraining = true, weights=weights, fullgenmodel=fullgenmodel, fulldata=xfull, fullseqlen = f_trnseqlens[i], avg_idms=avg_idms)
       else
         grads = gradplain(model, map(a->convert(atype, a), x), trnseqlens[i], trngold[i], o; weights=weights)
@@ -380,7 +380,7 @@ function segment(model, dataset, opts, o, tstaccs; genmodel = nothing, fullgenmo
     if o[:a_datasize] <= 50 && e%20 != 0
       continue
     end
-    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights, idms = vldavgidms)
+    vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights, idms = nothing)
     #save the best model
     if vld_loss < best_vld_cost
       best_vld_cost = vld_loss
@@ -573,8 +573,8 @@ function getstrokeseqs4d(x_batch_5D)
 end
 
 
-function getdata(filename, params)
-  return getsketchpoints3D(filename; params = params)
+function getdata(filename, a_filename, params)
+  return getsketchpoints3D(filename; a_filename = a_filename, params = params)
 end
 
 function savedata(filename, trndata, vlddata, tstdata)
@@ -605,7 +605,7 @@ end
 
 function makebatches(sketches, points3D, f_sketches, f_points3D, labels, V, params; full::Bool = false)
   #=creates batches of annotated data=#
-  @assert(length(sketches)==length(f_sketches))
+  @assert(length(sketches)==length(f_sketches), "Error number of sketches is $(length(sketches)) but number of full sketches is $(length(f_sketches))")
   f_data, f_seqlens =  sketch_minibatch(f_points3D, V, params)
   data, seqlens = minibatch(points3D, V, params)
   ygolds, instance_per_label = getlabels(sketches, labels, params)
@@ -655,7 +655,7 @@ function get_gen_data(o, params)
   println("Is data normalized: $(isnormalized(strokedata[:trn][1]))  $(isnormalized(strokedata[:vld][1]))")
   strokedata[:scalefactor] = params.scalefactor=#
 
-  data = getdata(o[:filename], params)
+  data = getdata(o[:filename], o[:a_filename], params)
   println("Normalizing stroke data")
   normalizedata!(data[:trn][1], data[:vld][1], data[:tst][1], params)
   println("Is data normalized: $(isnormalized(data[:trn][1]))  $(isnormalized(data[:vld][1]))")
@@ -730,13 +730,14 @@ end
 
 function get3ddata(annotations, labels, params)
   sketch_dicts, full_sketch_dicts = annotated2sketch_obj(annotations)
+  println("number of sketches = $(length(sketch_dicts)) and number of full sketches $(length(full_sketch_dicts)) ")
   points3D, numbatches, sketches = getprocesseddata(sketch_dicts, labels, params)
   full_points3D, full_numbatches, full_sketches = getprocesseddata(full_sketch_dicts, labels, params)
   return points3D, sketches, full_points3D, full_sketches
 end
 
-function get_seg_data2(o, labels; tt = nothing, params = nothing)
-  filename = string(annotp, o[:a_filename])
+function get_seg_data2(o, labels; tt = nothing, params = nothing, dpath = annotp)
+  filename = string(dpath, o[:a_filename])
   #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   annotations, annot_dicts = getannotateddata(filename, labels)
   acount = length(annot_dicts)
@@ -747,6 +748,7 @@ function get_seg_data2(o, labels; tt = nothing, params = nothing)
   else
     trnsize = o[:a_datasize]
   end
+  println("Number of annotated data: $(acount) Training set size: $(trnsize)")
   trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
   tv = randperm(length(trn_dicts))
   #training set size for trainn-valid split
@@ -762,8 +764,8 @@ function get_seg_data2(o, labels; tt = nothing, params = nothing)
   println("IN NORMALIZATION PHASE")
   ftruck_norm = 48.318977
   chair_norm = 56.06858
-  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=chair_norm)
-  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=chair_norm)
+  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=ftruck_norm)
+  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=ftruck_norm)
   dataset = makedataset(trn_sketches, trn_points3D, vld_sketches, vld_points3D, tst_sketches, tst_points3D, trn_full_sketches, trn_full_points3D, vld_full_sketches, vld_full_points3D, tst_full_sketches, tst_full_points3D, labels, o[:V], params)
   return dataset, tt
 end
@@ -777,7 +779,21 @@ function rnncv(o)
   #labels = ["W", "B", "T", "WNDW", "FA"]
   #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
   #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
-  labels = [ "B", "S", "L"] #for chair
+  #labels = [ "B", "S", "L"] #for chair
+  labels = [ "P", "C" ,"S", "L"] #for flower
+  #labels = ["body", "wing", "horistab", "vertstab",  "engine", "propeller"] #huang airplane
+  #labels = ["saddle", "frontframe", "wheel", "handle", "pedal", "chain", "fork", "backframe", "backcover" ] #huang bicycle
+  rawname = split(o[:a_filename], ".")[1]
+  dpath = annotp
+  if dpath == huangp
+    categories = getHuangLabels()
+    labels = categories[rawname]
+    println(labels)
+  elseif dpath == annotp
+    categories = getGoogleLabels()
+    labels = categories[rawname]
+    println(labels)
+  end
   o[:numclasses] = length(labels)
   model = initransfer(o) #initsegmenter(o)
   params = Parameters()
@@ -786,9 +802,11 @@ function rnncv(o)
   global optim = initoptim(model, o[:optimization])
   vldsize = 1 / o[:cvfolds]
   smooth = true
-  rawname = split(o[:a_filename], ".")[1]
+  params.max_seq_length = 200
+  params.min_seq_length = -1
+
   if !o[:readydata]
-    dataset, tt = get_seg_data2(o, labels; params=params)
+    dataset, tt = get_seg_data2(o, labels; params=params, dpath = dpath)
     save("annotsplits/$(rawname)indices.jld", "indices", tt)
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
@@ -799,7 +817,7 @@ function rnncv(o)
       tt = getshiftedindx(tt, o)
     end
     params.max_seq_length = 200
-    dataset, tt = get_seg_data2(o, labels; tt = tt, params=params)
+    dataset, tt = get_seg_data2(o, labels; tt = tt, params=params, dpath = dpath)
     #dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
   end
   println("Starting training")
@@ -837,7 +855,7 @@ function segmentation_mode(o)
   params.batchsize = o[:batchsize]
   params.min_seq_length = 1
   global optim = initoptim(model, o[:optimization])
-  vldsize = 1/5
+  vldsize = 1 / o[:cvfolds]
   smooth = true
   rawname = split(o[:a_filename], ".")[1]
   params.max_seq_length = 200
@@ -935,6 +953,8 @@ function context_mode(o)
   flush(STDOUT)
   contrain(model, dataset, optim, o)
 end
+
+
 
 function reportparams( o )
   println("Has Attention: $(o[:attn]); Mean Representation: $(o[:meanrep]); GMM Context: $(o[:hascontext])")

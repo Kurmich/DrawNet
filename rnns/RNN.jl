@@ -1,7 +1,8 @@
 
-global const pretrnp = "../pretrained/"
+global const pretrnp = "../pretrained7025/"
 global const datap = "../data/"
 global const annotp = "../annotateddata/"
+global const huangp = "../huang/"
 global const atype = ( gpu() >= 0 ? KnetArray{Float32} : Array{Float32} )
 initxav(d...) = atype(xavier(d...))
 initzeros(d...) = atype(zeros(d...))
@@ -24,7 +25,7 @@ function initransfer(o)
   e_H, d_H = o[:enc_rnn_size], o[:dec_rnn_size]
   numclasses = o[:numclasses]
   z_size = o[:z_size]
-  model[:w1] = [initxav(2d_H + 150, d_H), initzeros(1, d_H) ]
+  model[:w1] = [initxav(2d_H, d_H), initzeros(1, d_H) ]
   model[:w2] = [initxav(d_H, d_H), initzeros(1, d_H) ]
   model[:pred] = [initxav(d_H, numclasses), initzeros(1, numclasses)]
   return model
