@@ -377,7 +377,7 @@ function segment(model, dataset, opts, o, tstaccs; genmodel = nothing, fullgenmo
       update!(model, grads, opts)
       step += 1
     end
-    if o[:a_datasize] <= 50 && e%20 != 0
+    if o[:a_datasize] <= 400 && e%20 != 0
       continue
     end
     vld_loss, correct_count, instance_count = evalsegm(model, vlddata, f_vlddata, vldseqlens, vldgold, o; genmodel=genmodel, fullgenmodel=fullgenmodel, f_seqlens =f_vldseqlens, weights=weights, idms = nothing)
@@ -631,9 +631,13 @@ function makedataset(trnsketches, trnpoints3D, vldsketches, vldpoints3D, tstsket
 end
 
 
-function make_gen_dataset(dict_data, V, params)
+function make_gen_dataset(dict_data, V, params; subsetsize::Int = 0)
   #minibatch
   trnpoints3D, vldpoints3D, tstpoints3D = dict_data[:trn][1], dict_data[:vld][1], dict_data[:tst][1]
+  if subsetsize != 0
+    println("Using smaller subset of training data for training: size = $(subsetsize)")
+    trnpoints3D = trnpoints3D[1:subsetsize]
+  end
   trndata, trnseqlens = minibatch(trnpoints3D, V, params)
   vlddata, vldseqlens = minibatch(vldpoints3D, V, params)
   tstdata, tstseqlens = minibatch(tstpoints3D, V, params)
@@ -736,20 +740,24 @@ function get3ddata(annotations, labels, params)
   return points3D, sketches, full_points3D, full_sketches
 end
 
-function get_seg_data2(o, labels; tt = nothing, params = nothing, dpath = annotp)
+function get_seg_data2(o, labels; tt = nothing, params = nothing, dpath = annotp, scalefactor = 45, drawing::Bool = false)
   filename = string(dpath, o[:a_filename])
   #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
   annotations, annot_dicts = getannotateddata(filename, labels)
   acount = length(annot_dicts)
   tt = (tt == nothing) ? randperm(acount) : tt
   #get training set size for train-test split
-  if o[:a_datasize] == 0
-    trnsize = acount - div(acount, o[:cvfolds])
-  else
-    trnsize = o[:a_datasize]
-  end
+  trnsize = acount - div(acount, o[:cvfolds])
   println("Number of annotated data: $(acount) Training set size: $(trnsize)")
   trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
+  if o[:a_datasize] != 0
+    trnsize = o[:a_datasize]
+    println("Smaller training size $(trnsize)")
+    @assert(o[:a_datasize]%o[:cvfolds] == 0, "Annotated training data size must be divisible by $(o[:cvfolds])")
+    o[:batchsize] = getnewbatchsize(o[:a_datasize])
+    println("New batchsize is $(o[:batchsize])")
+    trn_dicts = decrease_trndatasize(trn_dicts, o[:a_datasize], o[:cvfolds])
+  end
   tv = randperm(length(trn_dicts))
   #training set size for trainn-valid split
   trnsize = trnsize - div(trnsize, o[:cvfolds])
@@ -761,11 +769,12 @@ function get_seg_data2(o, labels; tt = nothing, params = nothing, dpath = annotp
   vld_points3D, vld_sketches, vld_full_points3D, vld_full_sketches = get3ddata(vldannotations, labels, params)
   tst_points3D, tst_sketches, tst_full_points3D, tst_full_sketches = get3ddata(tstannotations, labels, params)
   @printf("trnsize: %d vldsize: %d tstsize: %d \n", length(trn_points3D), length(vld_points3D), length(tst_points3D))
-  println("IN NORMALIZATION PHASE")
-  ftruck_norm = 48.318977
-  chair_norm = 56.06858
-  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=ftruck_norm)
-  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=ftruck_norm)
+  println("IN NORMALIZATION PHASE scalefactor is $(scalefactor)")
+  normalizedata!(trn_points3D, vld_points3D, tst_points3D, params; scalefactor=scalefactor)
+  normalizedata!(trn_full_points3D, vld_full_points3D, tst_full_points3D, params; scalefactor=scalefactor)
+  if drawing
+    return trn_points3D, vld_points3D, tst_points3D
+  end
   dataset = makedataset(trn_sketches, trn_points3D, vld_sketches, vld_points3D, tst_sketches, tst_points3D, trn_full_sketches, trn_full_points3D, vld_full_sketches, vld_full_points3D, tst_full_sketches, tst_full_points3D, labels, o[:V], params)
   return dataset, tt
 end
@@ -784,6 +793,14 @@ function rnncv(o)
   #labels = ["body", "wing", "horistab", "vertstab",  "engine", "propeller"] #huang airplane
   #labels = ["saddle", "frontframe", "wheel", "handle", "pedal", "chain", "fork", "backframe", "backcover" ] #huang bicycle
   rawname = split(o[:a_filename], ".")[1]
+  #gendataset = loaddataset("$(datap)dataset$(o[:dataset])")
+  #scalefactor = 48.290142 #firetruck
+  #scalefactor = 56.090145 #chair
+  #scalefactor = 31.883362 #flower
+  #scalefactor = 43.812866 #airplane
+  scalefactor = 49.193924 #cat
+  #scalefactor = gendataset[:scalefactor]
+  #gendataset = nothing
   dpath = annotp
   if dpath == huangp
     categories = getHuangLabels()
@@ -806,7 +823,7 @@ function rnncv(o)
   params.min_seq_length = -1
 
   if !o[:readydata]
-    dataset, tt = get_seg_data2(o, labels; params=params, dpath = dpath)
+    dataset, tt = get_seg_data2(o, labels; params=params, dpath = dpath, scalefactor=scalefactor)
     save("annotsplits/$(rawname)indices.jld", "indices", tt)
   else
     #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
@@ -817,7 +834,7 @@ function rnncv(o)
       tt = getshiftedindx(tt, o)
     end
     params.max_seq_length = 200
-    dataset, tt = get_seg_data2(o, labels; tt = tt, params=params, dpath = dpath)
+    dataset, tt = get_seg_data2(o, labels; tt = tt, params=params, dpath = dpath, scalefactor=scalefactor)
     #dataset, trn_tst_indices, trn_vld_indices = get_seg_data(o[:a_filename], labels, vldsize; trn_tst_indices=trn_tst_indices, trn_vld_indices=trn_vld_indices, params=params)
   end
   println("Starting training")
@@ -918,7 +935,7 @@ function generation_mode(o)
     #create minibatched dataset from predivided dataset
     println("Loading data for training!")
     dict_data = loaddataset("$(datap)dataset$(o[:dataset])")
-    dataset = make_gen_dataset(dict_data, o[:V], params)
+    dataset = make_gen_dataset(dict_data, o[:V], params; subsetsize=o[:subsetsize])
   #  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
   end
   println("Starting training")
@@ -987,6 +1004,7 @@ function main(args=ARGS)
   s = ArgParseSettings()
   s.description="A Neural Representation of Sketch Drawings. (c) Kurmanbek Kaiyrbekov 2017."
   s.exc_handler=ArgParse.debug_handler
+  
   @add_arg_table s begin
     ("--epochs"; arg_type=Int; default=100; help="Total number of training set. Keep large.")
     ("--save_every"; arg_type=Int; default=1; help="Number of epochs per checkpoint creation.")
@@ -1027,7 +1045,8 @@ function main(args=ARGS)
     ("--model"; arg_type=String; default="model100.jld"; help="Name of the pretrained model")
     ("--cvfolds"; arg_type=Int; default=5; help="Number of folds to use for cross validation.")
     ("--fold"; arg_type=Int; default=-1; help="Current fold.")
-    ("--a_datasize"; arg_type=Int; default=0; help="Dataset size to use")
+    ("--a_datasize"; arg_type=Int; default=0; help="Annotated dataset size to use.")
+    ("--subsetsize"; arg_type=Int; default=0; help="Dataset size to use for training generative model.")
   end
   println("CHECK SCALEFACTOR")
   println(s.description)
@@ -1037,12 +1056,7 @@ function main(args=ARGS)
   if o[:segmode]
     #in segmenta mode
     #segmentation_mode(o)
-    if o[:a_datasize] == 0
-      rnncv(o)
-    else
-      segmentation_mode(o)
-    end
-
+    rnncv(o)
   elseif o[:conmode]
     context_mode(o)
   else
@@ -1058,6 +1072,6 @@ else
 end
 
 export revconvertmodel, encode, loaddata, getdata, loaddataset
-export getlatentvector, predict, get_mixparams
+export getlatentvector, predict, get_mixparams, get_seg_data2
 export softmax, sample_gaussian_2d, paddall, appendlatentvec
 end

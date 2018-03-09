@@ -41,7 +41,7 @@ function stroke_constructsketch(points)
     for i=1:size(stroke, 2)
       x += Float64(stroke[1, i])
       y += Float64(stroke[2, i])
-      if ( length(stroke[:, i]) == 5 && stroke[3, i] == 0 )  || ( length(stroke[:, i]) == 5 && stroke[5, i] == 1 ) #condition for V=4 -> stroke[3, i] == 0 for V=5 stroke[5, i] == 1
+      if ( length(stroke[:, i]) == 4 && stroke[3, i] == 0 )  || ( length(stroke[:, i]) == 5 && stroke[5, i] == 1 ) #condition for V=4 -> stroke[3, i] == 0 for V=5 stroke[5, i] == 1
         push!(endidxs, endidxs[end] + (i-1))
         break
       end
@@ -112,10 +112,6 @@ function sample(model, z; seqlen::Int = 45, temperature = 1.0, greedy_mode::Bool
   M = Int((size(model[:output][1], 2)-(V-2))/6) #number of mixtures
   d_H = size(model[:output][1], 1) #decoder hidden unit size
   z_size = size(model[:z][1], 1) #size of latent vector z
-  #=forgetcells = []
-  incells = []
-  outcells = []
-  changecells = []=#
   hiddencells = []
   cellcells = []
   if z == nothing
@@ -139,8 +135,6 @@ function sample(model, z; seqlen::Int = 45, temperature = 1.0, greedy_mode::Bool
       input = input * model[:embed]
     end
     state, gates = lstm(model[:decode], state, input; alpha=alpha, beta=beta, exposed=true)
-    #push!(hiddencells,  Array(state[1]))
-    #push!(cellcells,  Array(tanh(state[2])))
     output =  predict(model[:output], state[1]) #get output params
     pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm = get_mixparams(output, M, V; samplemode=true) #get mixture parameters and normalized logit values
     idx = get_pi_idx(rand(), pnorm; temp=temp, greedy=greedy)
@@ -151,12 +145,6 @@ function sample(model, z; seqlen::Int = 45, temperature = 1.0, greedy_mode::Bool
       push!(hiddencells,  Array(state[1]))
       push!(cellcells,  Array(tanh(state[2])))
     end
-    #=if idx_eos != 3
-      push!(forgetcells,  Array(gates[1]))
-      push!(incells,  Array(gates[2]))
-      push!(outcells,  Array(gates[3]))
-      push!(changecells,  Array(gates[4]))
-    end =#
     next_x, next_y = sample_gaussian_2d(mu_x[idx], mu_y[idx], sigma_x[idx], sigma_y[idx], rho[idx]; temp = sqrt(temp), greedy=greedy)
     push!(mixture_params, [ pnorm, mu_x, mu_y, sigma_x, sigma_y, rho, qnorm ])
     cur_coords = [next_x next_y eos]
@@ -223,28 +211,23 @@ function stroke_decode(model, z_vecs, lens; draw_mode = true, temperature = 1.0,
     z = z_vecs[i]
     len = lens[i]
     sampled_stroke_points, mixture_params, cell = sample(model, z; seqlen=len+5, temperature=temperature, greedy_mode=greedy_mode)
-    println(size(sampled_stroke_points))
-    printpoints(sampled_stroke_points)
+    #println(size(sampled_stroke_points))
+    #printpoints(sampled_stroke_points)
     sampled_stroke_points = clean_points(sampled_stroke_points)
-    println("after clean up")
-    printpoints(sampled_stroke_points)
+    #println("after clean up")
+    #printpoints(sampled_stroke_points)
     push!(cells, cell)
     #println(size(sampled_stroke_points))
     push!(sampled_points, sampled_stroke_points)
   end
   #sampled_points = stroke_clean_points(sampled_points)
   #sketch = stroke_constructsketch(strokes)
-  sketch = stroke_constructsketch(sampled_points)
-  strokes_objs = strokes_as_sketch_objs(sketch)
-  for i = 1:length(strokes_objs)
-    for j = 1:length(gatenames)
-      save_saturated_inds(cells[i][j], gatenames[j], strokes_objs[i]; mincutoff = mins[j], maxcutoff = maxs[j])
-    end
-  end
+  sampledsketch = stroke_constructsketch(sampled_points)
   #classifystrokes(sketch)
   if draw_mode
-    savesketch(sketch, "sampled.png")
+    savesketch(sampledsketch, "sampled.png")
   end
+  return sampledsketch
 end
 
 function getrandomsketch(points3D, idmtuples; tosave = true)
@@ -269,6 +252,7 @@ function getrandomsketch(points3D, idmtuples; tosave = true)
 end
 
 function makesequence(points5D)
+  #=Generate a neural network input sequence=#
   sequence = []
   push!(sequence, [0 0 1 0 0])
   for i=1:size(points5D, 2)
@@ -279,16 +263,14 @@ function makesequence(points5D)
 end
 
 
-
-
 function tostrokesketch(points3D, idx)
+  #=Takes 3D points as an input and generates strokes as a sequences for neural network=#
   x_5D = to_big_points(points3D[idx]; max_len = 150)
   end_indices =  find(x_5D[4, :] .== 1)
   push!(end_indices, size(x_5D, 2))
   strokecount = Int(sum(x_5D[4, :]))
   stroke_start = 1
-  strokeseq = []
-  sseqlens = []
+  strokeseq, sseqlens = [], []
   for i = 1:strokecount
     tmp = makesequence(x_5D[:, stroke_start:end_indices[i]]) #IS THIS CORRECT? what about [0,0,0,1,0]?
     stroke_as_seq =  map(a->convert(atype, a), tmp)
@@ -301,20 +283,12 @@ end
 
 function rand_strokesketch(points3D)
   idx = rand(1:length(points3D))
-  #idx  = 2889
-  #idx = 58
-  #idx = 2178
-#  idx = 2388
-#  idx = 4389
-#  idx =  4284
-#idx = 933
-  #idx = 4946
-  #idx = 8244
   info("Selected index is $(idx)")
   return tostrokesketch(points3D, idx)
 end
 
 function get_strokelatentvecs(model, strokeseq)
+  #=Retrieves latent vectors for each stroke in a sequence (strokeseq)=#
   z_vecs = []
   for stroke in strokeseq
     push!(z_vecs, getlatentvector(model, stroke))
@@ -388,6 +362,147 @@ function points3D2seq4d(points3D, idx)
   return strokeseq, sseqlens, x_5D
 end
 
+function getindices()
+  d = Dict()
+  d["firetruck"] = [8 29 950 1081 1450 1503]
+  d["flower"]    = [364 416 899 941 1000]
+  d["airplane"] = [20 103 640 775 915 978]
+  d["cat"] = [1483 184 1005 1219 1574 1517]
+  d["chair"] = [854 995 1003 2441]
+  d["pig"] = [28 48 72 74]
+  d["owl"] = [36 85 95 107 147]
+  d["face"] = [52 373 767 876 893 1001]
+  return d
+end
+
+function getcolor(T)
+  if T <= 0.2
+    return "#4286f4"
+  elseif T <= 0.4
+    return "#5738e2"
+  elseif T <= 0.6
+    return "#9338e2"
+  elseif T <= 0.8
+    return  "#da38e2"
+  elseif T < 1
+    return "#bc0353"
+  end
+  return "#e50909"
+end
+
+function generate_all_sketces(o)
+  d = getindices()
+  for key in keys(d)
+    indices = d[key]
+    dataset = loaddataset("$(datap)datasetr_full_simplified_$(key).jld")
+    trnpoints3D, vldpoints3D, tstpoints3D = dataset[:trn][1], dataset[:vld][1], dataset[:tst][1]
+    w = nothing
+    #=for i = 15:-5:10
+      if isfile("$(pretrnp)m$(i)$(key)_strokernnV5.jld")
+        w = load("$(pretrnp)m$(i)$(key)_strokernnV5.jld")
+        break
+      end
+    end=#
+    w = load("$(pretrnp)m10$(key)_strokernnV5.jld")
+    model = revconvertmodel(w["model"])
+    for idx in indices
+      x, lens, x_5D = tostrokesketch(tstpoints3D, idx)
+      end_indices =  find(x_5D[4, :] .== 1)
+      s = 1
+      strokes = []
+      for i= 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+        printpoints(stroke)
+        push!(strokes, stroke)
+        s = end_indices[i] + 1
+      end
+      z_vecs = get_strokelatentvecs(model, x)
+      #sketch = stroke_constructsketch(strokes)
+      #c = "black"
+      #savesketch(sketch, "drawn/orig$(key)$(idx)$(Int(100*o[:T])).png"; color=c)
+      sampledsketch = stroke_decode(model, z_vecs, lens; draw_mode = false, temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
+      c = getcolor(o[:T])
+      savesketch(sampledsketch, "drawn/$(key)$(idx)$(Int(100*o[:T])).png"; color=c)
+    end
+  end
+end
+
+
+function getbestindices()
+  d = Dict()
+  d["firetruck"] = [29]
+  d["flower"]    = [1000]
+  d["airplane"] = [103]
+  d["cat"] = [1005]
+  d["chair"] = [854]
+  d["pig"] = [48]
+  d["owl"] = [ 147]
+  d["face"] = [1001]
+  return d
+end
+
+function generate_single(o)
+  d = getbestindices()
+  rawname = split(o[:a_filename], ".")[1]
+  w = load("$(pretrnp)m10$(rawname)_strokernnV5.jld")
+  model = revconvertmodel(w["model"])
+  for key in keys(d)
+    indices = d[key]
+    dataset = loaddataset("$(datap)datasetr_full_simplified_$(key).jld")
+    trnpoints3D, vldpoints3D, tstpoints3D = dataset[:trn][1], dataset[:vld][1], dataset[:tst][1]
+    for idx in indices
+      x, lens, x_5D = tostrokesketch(tstpoints3D, idx)
+      end_indices =  find(x_5D[4, :] .== 1)
+      s = 1
+      strokes = []
+      for i= 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+        printpoints(stroke)
+        push!(strokes, stroke)
+        s = end_indices[i] + 1
+      end
+      z_vecs = get_strokelatentvecs(model, x)
+      sampledsketch = stroke_decode(model, z_vecs, lens; draw_mode = false, temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
+      c = "#1b9b3b"
+      savesketch(sampledsketch, "inter/$(rawname)$(key)$(idx).png"; color=c)
+    end
+  end
+end
+
+function dict2sketch(dictdata)
+  sketches = []
+  for d in dictdata
+    sketch = getsketch(d)
+    push!(sketches, sketch)
+  end
+  return sketches
+end
+
+function get_seg_3d(o, labels; tt = nothing, params = nothing, dpath = annotp, scalefactor = 45)
+  filename = string(dpath, o[:a_filename])
+  #labels = [ "UpW", "LoW", "F", "FWSR", "FWSL", "LS", "RS","LW", "RW", "O"]
+  #annotations, annot_dicts = getannotateddata(filename, labels)
+  sketches = get_sketch_objects(filename)
+  acount = length(sketches)
+  tt = (tt == nothing) ? randperm(acount) : tt
+  #get training set size for train-test split
+  trnsize = acount - div(acount, o[:cvfolds])
+  println("Number of annotated data: $(acount) Training set size: $(trnsize)")
+  trnsketches, tstsketches = data_tt_split(sketches, trnsize; rp = tt)
+
+  #trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
+  #trnsketches, tstsketches = dict2sketch(trn_dicts), dict2sketch(tst_dicts)
+  trnpoints3D, _, _ = preprocess(trnsketches, params)
+  tstpoints3D, _, tstsketches = preprocess(tstsketches, params)
+  for i = 1:length(tstsketches)
+    tmpsk = Sketch(tstsketches[i].label, tstsketches[i].recognized, tstsketches[i].key_id, tstsketches[i].points, tstsketches[i].end_indices)
+    savesketch(tmpsk, "segByModel/a_f$(o[:fold])_$(i).png")
+  end
+  DataLoader.normalize!(trnpoints3D, params; scalefactor = scalefactor)
+  DataLoader.normalize!(tstpoints3D, params; scalefactor = scalefactor)
+  return trnpoints3D, tstpoints3D
+end
+
 function main(args=ARGS)
   s = ArgParseSettings()
   s.description="Sketch sampler from model. (c) Kurmanbek Kaiyrbekov 2017."
@@ -405,12 +520,107 @@ function main(args=ARGS)
     ("--segmentmode"; action=:store_true; help="segmentation mode.")
     ("--filename"; arg_type=String; default="airplane.ndjson"; help="Data file name.")
     ("--a_filename"; arg_type=String; default="airplane1014.ndjson"; help="Annotated data file name.")
-    ("--batchsize"; arg_type=Int; default=16; help="Minibatch size. Recommend leaving at 100.")
+    ("--batchsize"; arg_type=Int; default=1; help="Minibatch size.")
     ("--hascontext"; action=:store_true; help="Store true if context info is used")
+    ("--cvfolds"; arg_type=Int; default=5; help="Number of folds to use for cross validation.")
+    ("--fold"; arg_type=Int; default=-1; help="Current fold.")
+    ("--a_datasize"; arg_type=Int; default=0; help="Annotated dataset size to use.")
   end
   println(s.description)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
+  if o[:segmentmode]
+    if o[:hascontext]
+      #load model for genrating sketches
+      println("Loading generative model from $(pretrnp)$(o[:gmodel])")
+      w = load("$(pretrnp)$(o[:gmodel])")
+      genmodel = revconvertmodel(w["model"])
+    end
+    println("Loading segmentation model from $(pretrnp)$(o[:model])")
+    w = load("$(pretrnp)$(o[:model])")
+    model = revconvertmodel(w["model"])
+    println("In segmentation mode")
+    vldsize = 1 / o[:cvfolds]
+    #scalefactor = 48.290142 #firetruck
+    #scalefactor = 56.090145 #chair
+    #scalefactor = 31.883362 #flower
+    #scalefactor = 43.812866 #airplane
+    scalefactor = 49.193924 #cat
+    params = Parameters()
+    params.batchsize = o[:batchsize]
+    params.min_seq_length = 1
+    params.max_seq_length = 200
+    filename = string(annotp, o[:a_filename])
+    rawname = split(o[:a_filename], ".")[1]
+    tt = load("annotsplits/$(rawname)indices.jld")["indices"]
+    println("Fold $(o[:fold])")
+    for i=1:(o[:fold]-1)
+      println("Shifting $(i)")
+      tt = getshiftedindx(tt, o)
+    end
+    dpath = annotp
+    if dpath == huangp
+      categories = getHuangLabels()
+      labels = categories[rawname]
+      println(labels)
+    elseif dpath == annotp
+      categories = getGoogleLabels()
+      labels = categories[rawname]
+      println(labels)
+    end
+    classnames = getGoogleSegmentNames()
+    classnames = copy(classnames[rawname])
+    colors = getGoogleColors()
+    colors = colors[rawname]
+    o[:numclasses] = length(labels)
+    #what is the scale factor?
+    trnpoints3D, tstpoints3D = get_seg_3d(o, labels; tt = tt, params=params, dpath = dpath, scalefactor=scalefactor)
+    println("Data retrieval checkpoint")
+    sketchpoints3D = tstpoints3D
+    #return
+    #DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
+    info("Number of sketches = $(length(sketchpoints3D))")
+    for i = 1:length(sketchpoints3D)
+      x, lens, x_5D = tostrokesketch(sketchpoints3D, i)
+      end_indices =  find(x_5D[4, :] .== 1)
+      s = 1
+      strokes = []
+      for j = 1:length(end_indices)
+        stroke = hcat(x_5D[:, s:end_indices[j] ], [0 0 0 0 1]')
+        #printpoints(stroke)
+        push!(strokes, stroke)
+        s = end_indices[j] + 1
+      end
+      sketch = stroke_constructsketch(strokes)
+      savesketch(sketch, "segByModel/o$(rawname)_f$(o[:fold])_$(i).png")
+      strokeclasses = getstrokelabels(model, x, lens; genmodel=genmodel)
+      println(strokeclasses)
+      @assert(length(strokes) == length(strokeclasses))
+      saveslabeled(sketch, strokeclasses, classnames, colors, "segByModel/$(rawname)_f$(o[:fold])_$(i).png")
+    end
+    println("Segmentation fold finish checkpoint")
+    return
+    x, lens, x_5D = rand_strokesketch(sketchpoints3D)
+    end_indices =  find(x_5D[4, :] .== 1)
+    s = 1
+    strokes = []
+    for i= 1:length(end_indices)
+      stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
+      printpoints(stroke)
+      push!(strokes, stroke)
+      s = end_indices[i] + 1
+    end
+    sketch = stroke_constructsketch(strokes)
+    info("Random sketch was obtained")
+    strokeclasses = getstrokelabels(model, x, lens)
+    println(strokeclasses)
+    saveslabeled(sketch, strokeclasses, classnames, "original.png")
+    return
+  end
+  
+  #generate_all_sketces(o)
+  #generate_single(o)
+  #return
   println("Loading model from $(pretrnp)$(o[:model])")
   w = load("$(pretrnp)$(o[:model])")
   model = revconvertmodel(w["model"])
@@ -427,38 +637,8 @@ function main(args=ARGS)
   info("Model was loaded")
   dataset = loaddataset("$(datap)dataset$(o[:dataset])")
   trnpoints3D, vldpoints3D, tstpoints3D = dataset[:trn][1], dataset[:vld][1], dataset[:tst][1]
-  #=sketches = dataset[:sketches]
-  (trnidx, vldidx, tstidx) = dataset[:idx]
-  trnsketches, vldsketches, tstsketches = sketches[trnidx], sketches[vldidx], sketches[tstidx]
-  scalefactor = dataset[:scalefactor]
-  strokes = randstrokes(tstsketches, scalefactor)
-  x_4d, seqlens, strokes4d = stroke2seq4d(strokes)
-  rcsketch = stroke_constructsketch(strokes4d)
-  savesketch(rcsketch, "original.png")
-  z_vecs = get_strokelatentvecs(model, x_4d)
-#  trnidm, vldidm, tstidm  = loaddata("$(datap)idm$(o[:imlen])$(o[:dataset])")
-  stroke_decode(model, z_vecs, seqlens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes4d)
-  info("Dataset  obtained")
-  return=#
-  #trnpoints3D, vldpoints3D, tstpoints3D = loaddata("$(datap)data$(o[:dataset])")
-  #=x4d, lens4d, x_5D = rand4d_strokesketch(tstpoints3D)
-  end_indices =  find(x_5D[4, :] .== 1)
-  s = 1
-  strokes = []
-  for i= 1:length(end_indices)
-    stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
-    printpoints(stroke)
-    push!(strokes, stroke)
-    s = end_indices[i] + 1
-  end
-  sketch = stroke_constructsketch(strokes)
-  info("Random sketch was obtained")
-  savesketch(sketch, "original.png")
-  z_vecs = get_strokelatentvecs(model, x4d)
-  info("got latent vector(s)")
-  stroke_decode(model, z_vecs, lens4d; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
-  SVR.freemodel(svmmodel)
-  return=#
+  rawname = split(o[:a_filename], ".")[1]
+
   x, lens, x_5D = rand_strokesketch(tstpoints3D)
   end_indices =  find(x_5D[4, :] .== 1)
   s = 1
@@ -479,69 +659,18 @@ function main(args=ARGS)
       strokes = []
       for j= 1:length(end_indices)
         stroke = hcat(x_5D[:, s:end_indices[j] ], [0 0 0 0 1]')
-        #printpoints(stroke)
         push!(strokes, stroke)
         s = end_indices[j] + 1
       end
-      z_vecs = get_strokelatentvecs(model, x)
-      stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
-    end
-    return
-  end
-
-  if o[:segmentmode]
-    if o[:hascontext]
-      #load model for genrating sketches
-      w = load("$(pretrnp)$(o[:gmodel])")
-      genmodel = revconvertmodel(w["model"])
-    end
-    info("In segment mode")
-    vldsize = 1/5
-    scalefactor = 43.8
-    params = Parameters()
-    params.batchsize = o[:batchsize]
-    params.min_seq_length = 1
-    params.max_seq_length = 200
-    filename = string(annotp, o[:a_filename])
-    info("NEEDS NORMALIZATION")
-    #sketchpoints3D, numbatches, sketches = getdata(o[:a_filename], params)
-    sketchpoints3D = trnpoints3D
-    #DataLoader.normalize!(sketchpoints3D, params; scalefactor=scalefactor)
-    info("Number of sketches = $(length(sketchpoints3D))")
-    for i = 1:length(sketchpoints3D)
-      x, lens, x_5D = tostrokesketch(sketchpoints3D, i)
-      end_indices =  find(x_5D[4, :] .== 1)
-      s = 1
-      strokes = []
-      for j = 1:length(end_indices)
-        stroke = hcat(x_5D[:, s:end_indices[j] ], [0 0 0 0 1]')
-        #printpoints(stroke)
-        push!(strokes, stroke)
-        s = end_indices[j] + 1
-      end
+      #z_vecs = get_strokelatentvecs(model, x)
       sketch = stroke_constructsketch(strokes)
-      strokeclasses = getstrokelabels(model, x, lens; genmodel=genmodel)
-      println(strokeclasses)
-      saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/ct$(i).png")
+      savesketch(sketch, "pics/o$(rawname)$(i).png")
+      #stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
     end
-
-    x, lens, x_5D = rand_strokesketch(sketchpoints3D)
-    end_indices =  find(x_5D[4, :] .== 1)
-    s = 1
-    strokes = []
-    for i= 1:length(end_indices)
-      stroke = hcat(x_5D[:, s:end_indices[i] ], [0 0 0 0 1]')
-      printpoints(stroke)
-      push!(strokes, stroke)
-      s = end_indices[i] + 1
-    end
-    sketch = stroke_constructsketch(strokes)
-    info("Random sketch was obtained")
-    strokeclasses = getstrokelabels(model, x, lens)
-    println(strokeclasses)
-    saveslabeled(sketch, strokeclasses, classnames, "original.png")
     return
   end
+
+  
   sketch = stroke_constructsketch(strokes)
   info("Random sketch was obtained")
   savesketch(sketch, "original.png")
@@ -550,5 +679,11 @@ function main(args=ARGS)
   stroke_decode(model, z_vecs, lens; temperature=o[:T], greedy_mode=o[:greedy], strokes = strokes)
   SVR.freemodel(svmmodel)
 end
-main()
+
+
+if VERSION >= v"0.5.0-dev+7720"
+    PROGRAM_FILE == "Drawer.jl" && main(ARGS)
+else
+    !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
+end
 end

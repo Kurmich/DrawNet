@@ -60,11 +60,11 @@ function getannotateddata(filename, labels)
   return annotations, annot_dicts
 end
 
-function annot2pic(filename, labels)
+function annot2pic(filename, imgname, classnames, labels; colors = getGoogleColors())
   #gets annotations and saves them to images
-  classnames = copy(labels)
   i = 1
-  push!(classnames, "No Label")
+  colors = colors[imgname]
+  dupl = Dict()
   open(filename, "r") do f
      while !eof(f)
        text_data = readline(f)  # file information to string
@@ -96,7 +96,12 @@ function annot2pic(filename, labels)
          end
        end
        strokeclasses[strokeclasses.==0] = length(classnames)
-       saveslabeled(sketch, strokeclasses, classnames, "segmentedpics/huangairp$(i).png")
+       if haskey(dupl, sketch.key_id)
+         println("duplicate : $(i) $(sketch.key_id)")
+       end
+       dupl[sketch.key_id] = 1
+       sketchname = "$(imgname)_$(i)_$(sketch.key_id)"
+       saveslabeled(sketch, strokeclasses, classnames, colors, "segmentedpics/$(sketchname).png")
        i += 1
      end
   end
@@ -207,6 +212,19 @@ function data_tt_split(annot_dicts, trncount::Int; rp = nothing)
   return trn_dicts, tst_dicts
 end
 
+function decrease_trndatasize(annot_dicts, trncount::Int, cvfolds::Int)
+  @assert(length(annot_dicts)%cvfolds == 0)
+  countperfold = div(trncount, cvfolds) #number of training data per valid fold
+  shift = div(length(annot_dicts), cvfolds)
+  newtrndata = []
+  for i=0:(cvfolds-1)
+    istart = i * shift + 1
+    iend = i * shift + countperfold
+    append!(newtrndata, annot_dicts[istart:iend])
+  end
+  return newtrndata
+end
+
 function getannotationdict(dict_data, labels)
   annotations = initannot(labels)
   fillannotations!(annotations, dict_data)
@@ -253,10 +271,47 @@ end
 
 function getGoogleLabels()
   category = Dict()
-  category["airplane"]   = ["W", "B", "T", "WNDW", "FA"]
+  category["airplane"]   = ["W", "B", "T", "WNDW"]
   category["cat"]        = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
   category["firetruck"]  = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
   category["chair"]      = [ "B", "S", "L"]
   category["flower"]     = [ "P", "C" ,"S", "L"]
   return category
+end
+
+
+function getGoogleSegmentNames()
+  category = Dict()
+  category["airplane"]   = ["wing", "body", "tail", "window"]
+  category["cat"]        = [ "ear", "head", "eye", "nose", "whisker", "mouth",  "body", "tail", "leg"]
+  category["firetruck"]  = [ "light", "ladder", "body", "cab", "window", "water hose",  "wheel"]
+  category["chair"]      = [ "back", "seat", "leg"]
+  category["flower"]     = [ "petal", "core" ,"stem", "leaf"]
+  return category
+end
+
+function getGoogleColors()
+  colors = Dict()
+  #colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan" "pink" "brown" "orange"]
+  colors["airplane"]   = ["blue" "green" "red" "magenta" "yellow" "black"  "pink" "brown" "orange"] #["W", "B", "T", "WNDW"]
+  colors["cat"]        = ["blue" "green" "red" "magenta" "yellow" "black" "cyan" "pink" "brown" "orange"] #[ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"]
+  colors["firetruck"]  = ["blue" "green" "red" "magenta" "yellow" "black" "cyan" "pink" "brown" "orange"] #[ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"]
+  colors["chair"]      = ["blue"  "red" "black" "green"  "magenta" "yellow"  "cyan" "pink" "brown" "orange"] #[ "B", "S", "L"]
+  colors["flower"]     = ["red"  "cyan"  "black"  "green"  "magenta" "blue" "yellow"  "pink" "brown" "orange"] #[ "P", "C" ,"S", "L"]
+  return colors
+end
+
+function getnewbatchsize(count)
+  if count  <= 10
+    return 1
+  elseif count <= 50
+    return 2
+  elseif count <= 100
+    return 4
+  elseif count <= 200
+    return 8
+  elseif count <= 300
+    return 12
+  end
+  return 16
 end

@@ -161,6 +161,13 @@ function main(args=ARGS)
   isa(args, AbstractString) && (args=split(args))
   o = parse_args(args, s; as_symbols=true)
   filename = string(o[:datapath], o[:a_filename])
+  reportsvmsettings(o)
+  rawname = split(o[:a_filename], ".")[1]
+  categories = getGoogleLabels()
+  labels = categories[rawname]
+  classnames = getGoogleSegmentNames()
+  classnames = copy(classnames[rawname])
+  push!(classnames, "No Label")
   #labels = [  "W", "B", "T" ,"WNDW", "FA"]
   #labels = [ "EAR", "H", "EYE", "N", "W", "M",  "B", "T", "L"] #for cat
   #labels = [ "LGT", "LDR", "B", "C", "WNDW", "WHS",  "WHL"] #for firetruck
@@ -168,56 +175,38 @@ function main(args=ARGS)
   #labels = [ "P", "C" ,"S", "L"] #for flower
   #labels = ["body", "wing", "horistab", "vertstab",  "engine", "propeller"]
   #labels = [ "L", "F", "FP"]
-  #annot2pic(filename, labels)
-  #return
+  annot2pic(filename, rawname, classnames, labels)
+  return
   vldsize = 1/5
-
-  reportsvmsettings(o)
-  rawname = split(o[:a_filename], ".")[1]
-  categories = getGoogleLabels()
-  labels = categories[rawname]
   tstaccs = Float64[]
-  if o[:a_datasize] != 0
-    fln = "annotsplits/$(rawname)$(o[:a_datasize])$(o[:fold]).jld"
-    println("Loading data from $(fln)")
-    d = load(fln)
-    alldata = d["data"]
-    annotations, annot_dicts = getannotateddata(filename, labels)
-    for (dataset, tt, tv) in alldata
-      trn_dicts, tst_dicts = data_tt_split(annot_dicts, o[:a_datasize]; rp = tt)
-      trnannot = getannotationdict(trn_dicts, labels)
-      tstannot = getannotationdict(tst_dicts, labels)
-      println("Starting new split")
-      trnidms = getfeats(trnannot, o)
-      tstidms = getfeats(tstannot, o)
-      printdatastats(trnannot)
-      #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-      C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
-      trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
-    end
-    println(tstaccs)
-    println("Mean: $(mean(tstaccs)) STD: $(std(tstaccs))")
-  else
-    annotations, annot_dicts = getannotateddata(filename, labels)
-    acount = length(annot_dicts)
-    tt = load("annotsplits/$(rawname)indices.jld")["indices"]
-    trnsize = acount - div(acount, o[:cvfolds])
-    println("training datasize $(trnsize)")
-    println("Fold $(o[:fold])")
-    for i=1:(o[:fold]-1)
-      println("Shifting $(i)")
-      tt = getshiftedindx(tt, o)
-    end
-    trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
-    trnannot = getannotationdict(trn_dicts, labels)
-    tstannot = getannotationdict(tst_dicts, labels)
-    trnidms = getfeats(trnannot, o)
-    tstidms = getfeats(tstannot, o)
-    printdatastats(trnannot)
-    #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
-    C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
-    trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
+  annotations, annot_dicts = getannotateddata(filename, labels)
+  acount = length(annot_dicts)
+  tt = load("annotsplits/$(rawname)indices.jld")["indices"]
+  println("loading indices from annotsplits/$(rawname)indices.jld")
+  trnsize = acount - div(acount, o[:cvfolds])
+  println("training datasize $(trnsize)")
+  println("Fold $(o[:fold])")
+  for i=1:(o[:fold]-1)
+    println("Shifting $(i)")
+    tt = getshiftedindx(tt, o)
   end
+  trn_dicts, tst_dicts = data_tt_split(annot_dicts, trnsize; rp = tt)
+  if o[:a_datasize] != 0
+    trnsize = o[:a_datasize]
+    println("Smaller training size $(trnsize)")
+    @assert(o[:a_datasize]%o[:cvfolds] == 0, "Annotated training data size must be divisible by $(o[:cvfolds])")
+    trn_dicts = decrease_trndatasize(trn_dicts, o[:a_datasize], o[:cvfolds])
+  end
+  println("Training set size $(trnsize)")
+  trnannot = getannotationdict(trn_dicts, labels)
+  tstannot = getannotationdict(tst_dicts, labels)
+  trnidms = getfeats(trnannot, o)
+  tstidms = getfeats(tstannot, o)
+  printdatastats(trnannot)
+  flush(STDOUT)
+  #trnidms, tstidms = train_test_split(idms, o[:tstsize]; indices = trn_tst_indices)
+  C, gamma = get_cvd_params(trnidms, o[:cvfolds], labels)
+  trainsvm(trnidms, tstidms, C, gamma, labels, tstaccs)
 
   return
   annotations, annot_dicts = getannotateddata(filename, labels)

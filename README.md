@@ -1,1 +1,1 @@
-# Deep Neural Network for drawing based of a Neural Representation of Sketch Drawings
+# Neural network models for art experiments implemented in Julia
