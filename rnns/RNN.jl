@@ -225,7 +225,7 @@ function normlayer(x, alpha, beta; epsilon=1e-3, mean = nothing, rstd = nothing)
   mean = sum(x, 2)/size(x, 2) #dims = [batchsize, 1] sum over hidden units
   x_shifted = x .- mean
   var = sum(x_shifted.*x_shifted, 2)/size(x_shifted, 2) #dims = [batchsize, 1] sum over hidden units
-  rstd = 1 ./ sqrt(var + epsilon)
+  rstd = 1 ./ sqrt.(var + epsilon)
   return alpha .* x_shifted .* rstd .+ beta
 end
 
@@ -236,12 +236,12 @@ function layernorm_lstm(param, state, input, alpha, beta; dprob=0, exposed::Bool
   hidden, cell = state
   h = size(hidden, 2)
   gates = hcat(input, hidden) * weight .+ bias
-  forget = sigm(normlayer(gates[:, 1:h], alpha[1], beta[1]))
-  ingate = sigm(normlayer(gates[:, 1+h:2h], alpha[2], beta[2]))
-  outgate = sigm(normlayer(gates[:, 1+2h:3h], alpha[3], beta[3]))
-  change = tanh(normlayer(gates[:, 1+3h:4h], alpha[4], beta[4]))
+  forget = sigm.(normlayer(gates[:, 1:h], alpha[1], beta[1]))
+  ingate = sigm.(normlayer(gates[:, 1+h:2h], alpha[2], beta[2]))
+  outgate = sigm.(normlayer(gates[:, 1+2h:3h], alpha[3], beta[3]))
+  change = tanh.(normlayer(gates[:, 1+3h:4h], alpha[4], beta[4]))
   cell = cell .* forget + ingate .* dropout(change, dprob) #memoryless dropout
-  hidden = outgate .* tanh(normlayer(cell, alpha[5], beta[5]))
+  hidden = outgate .* tanh.(normlayer(cell, alpha[5], beta[5]))
   if exposed #return all gates if needed for inspection
     return (hidden, cell), (forget, ingate, outgate, change)
   end

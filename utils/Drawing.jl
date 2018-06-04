@@ -268,7 +268,7 @@ function plotsketch(sketch::Sketch)
   end
 end
 
-function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1, mydpi=100, imsize=256, scaled = false)
+function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1, mydpi=100, imsize=256, scaled = false, color = nothing)
   #Prints contents of current sketch
   fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
   strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
@@ -280,7 +280,11 @@ function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1
     x = sketch.points[1, start_ind:end_ind]
     y = sketch.points[2, start_ind:end_ind]
     if strokenum <= strokelimit
-      plot(x, -y, linewidth = 1)
+      if color == nothing
+        plot(x, -y, linewidth = 1)
+      else
+        plot(x, -y, linewidth = 1, color = color)
+      end
     else
       plot(x, -y, linewidth = 1, color = "white")
     end
@@ -293,12 +297,12 @@ function savesketch(sketch::Sketch, filename::String="sketch.png"; completness=1
 close()
 end
 
-function saveslabeled(sketch::Sketch, strokeclasses, classnames, filename::String="sketch.png"; completness=1, mydpi=100, imsize=400, scaled = false)
+function saveslabeled(sketch::Sketch, strokeclasses, classnames, colors, filename::String="sketch.png"; completness=1, mydpi=100, imsize=500, scaled = false)
   #Prints contents of current sketch
-  colors = ["blue" "green" "red" "magenta" "yellow" "black" "cyan" "pink" "brown" "orange"]
-  fig = figure(figsize=(imsize/mydpi, imsize/mydpi), dpi=mydpi)
+  fig = figure(figsize=((imsize+20)/mydpi, imsize/mydpi), dpi=mydpi)
   strokelimit = Integer(ceil(completness*length(sketch.end_indices)))
   usedclasses = Int[]
+  ax = axes()
   #iterate through strokes
   for strokenum=1:(length(sketch.end_indices)-1)
     start_ind = sketch.end_indices[strokenum]+1
@@ -324,10 +328,11 @@ function saveslabeled(sketch::Sketch, strokeclasses, classnames, filename::Strin
     if scaled
       subplots_adjust(bottom=0.,left=0.,right=1.,top=1.)
     end
-    legend()
-    axis("off")
   end
-  savefig(filename, dpi=mydpi)
+  legend(bbox_to_anchor=(1.05, 1), loc=2,borderaxespad=0, fontsize=24)
+  ax[:set_position]([0.06,0.06,0.71,0.91])
+  axis("off")
+  savefig(filename, dpi=mydpi, bbox_inches="tight")
 close()
 end
 

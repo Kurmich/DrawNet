@@ -55,10 +55,10 @@ end
 
 function get_sketch_objects(filename; a_filename = "nothing")
   println("Annotated file $(a_filename)")
-  akeys = getannotatedkeys(string(annotp, a_filename)) #SKIP ANNOTATED ONES
-  #akeys = Dict()
+  #akeys = getannotatedkeys(string(annotp, a_filename)) #SKIP ANNOTATED ONES
+  akeys = Dict()
 
-  sketch_objects = []
+  sketch_objects = Sketch[]
   open(filename, "r") do f
      while !eof(f)
        sketch_as_dict = Dict()
@@ -193,7 +193,7 @@ end
 
 function normalize!(sketchpoints3D, params::Parameters; scalefactor = nothing)
   #=Normalize entire dataset (delta_x, delta_y) by the scaling factor.=#
-  scalefactor = (scalefactor == nothing)? get_scalefactor(sketchpoints3D) : scalefactor
+  scalefactor = (scalefactor == nothing) ? get_scalefactor(sketchpoints3D) : scalefactor
   params.scalefactor = scalefactor
   println("Normalizing by $(scalefactor)")
   for points in sketchpoints3D

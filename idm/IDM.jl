@@ -175,6 +175,21 @@ function get_pixelvals(thetas, angle; angle_threshold = 45)
   return mindist
 end
 
+
+function transform2(points; newmax=20,  newmin=2)
+  transpoints =  copy(points)
+  minx = minimum(transpoints[1, :])
+  miny = minimum(transpoints[2, :])
+  transpoints[1, :] -= minx
+  transpoints[2, :] -= miny
+  oldmax = maximum(transpoints)
+  if oldmax != 0
+    transpoints *= (newmax/oldmax)
+  end
+  transpoints += newmin
+  return floor(transpoints)
+end
+
 function transform(points; newmax=23,  newmin=2)
   transpoints =  copy(points)
   newrange = newmax - newmin

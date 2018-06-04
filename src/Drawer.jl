@@ -484,7 +484,7 @@ function get_seg_3d(o, labels; tt = nothing, params = nothing, dpath = annotp, s
   #annotations, annot_dicts = getannotateddata(filename, labels)
   sketches = get_sketch_objects(filename)
   acount = length(sketches)
-  tt = (tt == nothing) ? randperm(acount) : tt
+  tt = (tt == nothing) ? randperm(acount) : tt 
   #get training set size for train-test split
   trnsize = acount - div(acount, o[:cvfolds])
   println("Number of annotated data: $(acount) Training set size: $(trnsize)")
@@ -494,10 +494,10 @@ function get_seg_3d(o, labels; tt = nothing, params = nothing, dpath = annotp, s
   #trnsketches, tstsketches = dict2sketch(trn_dicts), dict2sketch(tst_dicts)
   trnpoints3D, _, _ = preprocess(trnsketches, params)
   tstpoints3D, _, tstsketches = preprocess(tstsketches, params)
-  for i = 1:length(tstsketches)
+  #=for i = 1:length(tstsketches)
     tmpsk = Sketch(tstsketches[i].label, tstsketches[i].recognized, tstsketches[i].key_id, tstsketches[i].points, tstsketches[i].end_indices)
     savesketch(tmpsk, "segByModel/a_f$(o[:fold])_$(i).png")
-  end
+  end =#
   DataLoader.normalize!(trnpoints3D, params; scalefactor = scalefactor)
   DataLoader.normalize!(tstpoints3D, params; scalefactor = scalefactor)
   return trnpoints3D, tstpoints3D
@@ -541,11 +541,11 @@ function main(args=ARGS)
     model = revconvertmodel(w["model"])
     println("In segmentation mode")
     vldsize = 1 / o[:cvfolds]
-    #scalefactor = 48.290142 #firetruck
+    scalefactor = 48.290142 #firetruck
     #scalefactor = 56.090145 #chair
     #scalefactor = 31.883362 #flower
     #scalefactor = 43.812866 #airplane
-    scalefactor = 49.193924 #cat
+    #scalefactor = 49.193924 #cat
     params = Parameters()
     params.batchsize = o[:batchsize]
     params.min_seq_length = 1
@@ -592,7 +592,7 @@ function main(args=ARGS)
         s = end_indices[j] + 1
       end
       sketch = stroke_constructsketch(strokes)
-      savesketch(sketch, "segByModel/o$(rawname)_f$(o[:fold])_$(i).png")
+     # savesketch(sketch, "segByModel/o$(rawname)_f$(o[:fold])_$(i).png")
       strokeclasses = getstrokelabels(model, x, lens; genmodel=genmodel)
       println(strokeclasses)
       @assert(length(strokes) == length(strokeclasses))

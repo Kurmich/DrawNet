@@ -38,12 +38,12 @@ function vec_bivariate_prob(x1, x2, mu1, mu2, s1, s2, rho)
   s1s2 = s1 .* s2
   z = (norm1./s1).*(norm1./s1) + (norm2./s2).*(norm2./s2) - ( (2 .* rho .*  (norm1 .* norm2)) ./ s1s2 )
   neg_rho = 1 .- rho.*rho
-  prob = exp(-(z ./ (2.*neg_rho)) ) ./ (2*pi.*s1s2.*sqrt(neg_rho))
+  prob = exp.(-(z ./ (2.*neg_rho)) ) ./ (2*pi.*s1s2.*sqrt.(neg_rho))
   return prob
 end
 
 function softmax(p, d::Int)
-  tmp = exp(p)
+  tmp = exp.(p)
   return tmp ./ sum(tmp, d)
 end
 
@@ -135,9 +135,9 @@ function get_mixparams(output, M::Int, V::Int; samplemode=false)
   pnorm = softmax(output[:, 1:M], 2) #normalized distribution probabilities
   mu_x = output[:, M+1:2M]
   mu_y = output[:, 2M+1:3M]
-  sigma_x = exp(output[:, 3M+1:4M])
-  sigma_y = exp(output[:, 4M+1:5M])
-  rho = tanh(output[:, 5M+1:6M])
+  sigma_x = exp.(output[:, 3M+1:4M])
+  sigma_y = exp.(output[:, 4M+1:5M])
+  rho = tanh.(output[:, 5M+1:6M])
   if samplemode
     qnorm = softmax(output[:, 6M+1:6M+(V-2)], 2) #normalized log probabilities of logits
   else
@@ -271,8 +271,8 @@ function transferloss(model, genmodel, data, seqlen, ygold, o; istraining::Bool 
     if avg_idms != nothing
       h = hcat(h, avg_idms)
     end
-    h = relu(h*model[:w1][1] .+ model[:w1][2])
-    h = relu(h*model[:w2][1] .+ model[:w2][2])
+    h = relu.(h*model[:w1][1] .+ model[:w1][2])
+    h = relu.(h*model[:w2][1] .+ model[:w2][2])
     ypred = h*model[:pred][1] .+ model[:pred][2]
     ynorm = logp(ypred, 2)
     return -sum(ygold .* ynorm)/size(ygold, 1), ypred
@@ -285,9 +285,9 @@ function transferloss(model, genmodel, data, seqlen, ygold, o; istraining::Bool 
   if avg_idms != nothing
     h = hcat(h, avg_idms)
   end
-  h = relu(h*model[:w1][1] .+ model[:w1][2])
+  h = relu.(h*model[:w1][1] .+ model[:w1][2])
   h = dropout(h, 0.5)
-  h = relu(h*model[:w2][1] .+ model[:w2][2])
+  h = relu.(h*model[:w2][1] .+ model[:w2][2])
   h = dropout(h, 0.5)
   ypred = h*model[:pred][1] .+ model[:pred][2]
   ynorm = logp(ypred, 2)
@@ -1065,11 +1065,8 @@ function main(args=ARGS)
   println("CHECK SCALEFACTOR")
 end
 #main()
-if VERSION >= v"0.5.0-dev+7720"
-    PROGRAM_FILE == "DrawNet.jl" && main(ARGS)
-else
-    !isinteractive() && !isdefined(Core.Main,:load_only) && main(ARGS)
-end
+
+PROGRAM_FILE == "DrawNet.jl" && main(ARGS)
 
 export revconvertmodel, encode, loaddata, getdata, loaddataset
 export getlatentvector, predict, get_mixparams, get_seg_data2
